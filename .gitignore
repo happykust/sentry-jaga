@@ -87,6 +87,8 @@ fabric.properties
 [Ll]ib64
 [Ll]ocal
 [Ss]cripts
+# ...but not our own probe/diagnostic scripts (the pattern above targets Windows venvs).
+!/scripts/
 pyvenv.cfg
 .venv
 pip-selfcheck.json
