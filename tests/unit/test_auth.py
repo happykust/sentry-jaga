@@ -1,5 +1,7 @@
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from sentry_jaga.client.auth import InMemoryTokenCache, TokenManager
 from sentry_jaga.client.models import Token
 
@@ -96,4 +98,33 @@ def test_token_shared_via_cache_between_managers() -> None:
 
     assert first.get_access_token() == "shared"
     assert second.get_access_token() == "shared"
+    assert calls["login"] == 1
+
+
+@pytest.mark.parametrize(
+    "corrupted",
+    [
+        pytest.param({"garbage": "no token here"}, id="missing-keys"),
+        pytest.param(
+            {"access_token": "at", "refresh_token": "rt", "expires_at": "не-дата"},
+            id="unparsable-expires-at",
+        ),
+    ],
+)
+def test_corrupted_cache_entry_triggers_relogin(corrupted: dict[str, str]) -> None:
+    cache = InMemoryTokenCache()
+    cache.set("jaga:test", corrupted, timeout=60)
+
+    calls = {"login": 0}
+
+    def login() -> Token:
+        calls["login"] += 1
+        return _token("fresh")
+
+    def refresh(_rt: str) -> Token:  # pragma: no cover - не должен вызываться
+        raise AssertionError("рефреш не должен вызываться на битой записи")
+
+    manager = TokenManager(login=login, refresh=refresh, cache=cache, cache_key="jaga:test")
+
+    assert manager.get_access_token() == "fresh"
     assert calls["login"] == 1
