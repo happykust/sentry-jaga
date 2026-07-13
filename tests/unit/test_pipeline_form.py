@@ -66,6 +66,25 @@ def test_form_valid_when_jaga_accepts_credentials() -> None:
 
 
 @responses.activate
+def test_form_assumes_https_for_schemeless_url() -> None:
+    """Адрес без схемы достраивается до HTTPS, а не до HTTP.
+
+    В Django 5.x (его везёт Sentry 26.3.1) `URLField` без `assume_scheme` подставляет
+    `http://`. Тогда пароль сервисного аккаунта уходит на верификацию открытым текстом,
+    а http-адрес навсегда оседает в `Integration.metadata`.
+    """
+    responses.add(responses.POST, f"{API}/v1/auth/login", json=LOGIN_OK, status=200)
+    form = InstallationForm(
+        {"instance_url": "jaga.example.com", "email": "bot@example.com", "password": "secret"}
+    )
+
+    assert form.is_valid(), form.errors
+    assert form.cleaned_data["instance_url"] == "https://jaga.example.com"
+    # И сам логин ушёл по HTTPS — пароль не покидает машину в открытом виде.
+    assert [call.request.url for call in responses.calls] == [f"{API}/v1/auth/login"]
+
+
+@responses.activate
 def test_form_surfaces_rejection_by_jaga_as_form_error() -> None:
     responses.add(
         responses.POST, f"{API}/v1/auth/login", json={"message": "Неверный пароль"}, status=401

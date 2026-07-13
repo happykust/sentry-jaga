@@ -35,8 +35,14 @@ def verify_credentials(instance_url: str, email: str, password: str) -> None:
 
 
 class InstallationForm(forms.Form):
+    # `assume_scheme="https"` — не косметика: в Django 5.x (его и везёт Sentry 26.3.1)
+    # URLField без этого аргумента достраивает адрес без схемы до `http://`, а Sentry
+    # не выставляет FORMS_URLFIELD_ASSUME_HTTPS. Админ вводит `jaga.example.com` —
+    # и пароль сервисного аккаунта уходит на верификацию открытым текстом, а http-адрес
+    # навсегда оседает в `Integration.metadata`. Аргумент работает и в Django 6.x.
     instance_url = forms.URLField(
         label="Адрес Яги",
+        assume_scheme="https",
         help_text="Базовый URL инсталляции Яги, например https://jaga.example.com",
         widget=forms.TextInput(attrs={"placeholder": "https://jaga.example.com"}),
     )
