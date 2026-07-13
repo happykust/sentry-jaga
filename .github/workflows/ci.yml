@@ -9,6 +9,10 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# CI только читает код: сужаем токен до минимума вместо дефолтных скоупов.
+permissions:
+  contents: read
+
 jobs:
   lint:
     name: Линтеры и типы

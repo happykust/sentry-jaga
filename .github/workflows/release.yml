@@ -36,8 +36,12 @@ jobs:
         with:
           name: dist
           path: dist/
+      # Пин на коммит, а не на ветку `release/v1`: джоба несёт `id-token: write`,
+      # то есть право выпустить OIDC-токен для trusted publishing в PyPI. Мутабельная
+      # ветка означала бы, что любой её сдвиг (в т.ч. недружественный) немедленно
+      # получает это право. Обновляется вручную, вместе с проверкой changelog экшена.
       - name: Опубликовать в PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
 
   github-release:
     name: GitHub Release
