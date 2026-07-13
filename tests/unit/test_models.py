@@ -42,9 +42,9 @@ def test_task_type_from_api() -> None:
 
 
 def test_attribute_from_api_defaults() -> None:
-    attr = Attribute.from_api({"id": 11, "name": "Title", "objectTypeNameM": "task.title"})
+    attr = Attribute.from_api({"id": 11, "name": "Title", "objectTypeNameM": "task.task_title"})
     assert attr.id == 11
-    assert attr.object_type_name_m == "task.title"
+    assert attr.object_type_name_m == "task.task_title"
     assert attr.required is False
     assert attr.multiple is False
     assert attr.visible is True
@@ -55,8 +55,8 @@ def test_attribute_from_api_dictionary_and_multiple() -> None:
     attr = Attribute.from_api(
         {
             "id": 12,
-            "name": "Priority",
-            "objectTypeNameM": "task.priority",
+            "name": "Severity",
+            "objectTypeNameM": "task.flex_severity",
             "dictionaryId": 55,
             "required": True,
             "multiple": True,

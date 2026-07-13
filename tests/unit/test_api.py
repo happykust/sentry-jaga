@@ -215,8 +215,19 @@ def test_get_task_type_attributes_flattens_groups(client: JagaClient) -> None:
                     "title": "General",
                     "orderNum": 0,
                     "attributes": [
-                        {"id": 100, "name": "Title", "objectTypeNameM": "task.title"},
-                        {"id": 101, "name": "Description", "objectTypeNameM": "task.content_data"},
+                        {
+                            "id": 90,
+                            "name": "Space",
+                            "objectTypeNameM": "task.project_id",
+                            "required": True,
+                        },
+                        {
+                            "id": 100,
+                            "name": "Title",
+                            "objectTypeNameM": "task.task_title",
+                            "required": True,
+                        },
+                        {"id": 101, "name": "Description", "objectTypeNameM": "task.content"},
                     ],
                 },
                 {
@@ -224,11 +235,17 @@ def test_get_task_type_attributes_flattens_groups(client: JagaClient) -> None:
                     "orderNum": 1,
                     "attributes": [
                         {
-                            "id": 102,
-                            "name": "Priority",
-                            "objectTypeNameM": "task.priority",
+                            "id": 103,
+                            "name": "Assignees",
+                            "objectTypeNameM": "task.assignee_uuid",
+                            "multiple": True,
+                        },
+                        {
+                            "id": 110,
+                            "name": "Severity",
+                            "objectTypeNameM": "task.flex_severity",
                             "dictionaryId": 55,
-                        }
+                        },
                     ],
                 },
             ],
@@ -236,8 +253,103 @@ def test_get_task_type_attributes_flattens_groups(client: JagaClient) -> None:
         status=200,
     )
     attrs = client.get_task_type_attributes(1, 10)
-    assert [a.id for a in attrs] == [100, 101, 102]
-    assert attrs[2].dictionary_id == 55
+
+    assert [a.id for a in attrs] == [90, 100, 101, 103, 110]
+    by_id = {a.id: a for a in attrs}
+    assert by_id[90].required is True
+    assert by_id[103].multiple is True
+    assert by_id[110].dictionary_id == 55
+
+
+# --- value sources for the reference attributes with no dictionary ---------
+
+
+@responses.activate
+def test_get_space_users_returns_person_uuids(client: JagaClient) -> None:
+    """The value of `task.assignee_uuid` is the person UUID, NOT the numeric profile id."""
+    _mock_login()
+    responses.add(
+        responses.GET,
+        f"{API}/v1/project/getUserProfileDtos/1",
+        json=[
+            {
+                "id": 2986,
+                "personUuid": "b177cf3d-d2e3-4da8-bd94-0cc0ba172514",
+                "email": "ivanov@example.com",
+                "status": "ACTIVE",
+                "displayName": "Ivanov Ivan",
+                "canBeAssign": True,
+                "isBlocked": False,
+            }
+        ],
+        status=200,
+    )
+
+    assert client.get_space_users(1) == [("b177cf3d-d2e3-4da8-bd94-0cc0ba172514", "Ivanov Ivan")]
+
+
+@responses.activate
+def test_get_space_users_drops_who_cannot_be_assigned(client: JagaClient) -> None:
+    """Offering a blocked or non-assignable member would only build a task Jaga refuses, and a
+    profile with no `personUuid` has no value to send at all."""
+    _mock_login()
+    responses.add(
+        responses.GET,
+        f"{API}/v1/project/getUserProfileDtos/1",
+        json=[
+            {
+                "id": 1,
+                "personUuid": "uuid-ok",
+                "displayName": "Assignable",
+                "canBeAssign": True,
+                "isBlocked": False,
+            },
+            {
+                "id": 2,
+                "personUuid": "uuid-blocked",
+                "displayName": "Blocked",
+                "canBeAssign": True,
+                "isBlocked": True,
+            },
+            {
+                "id": 3,
+                "personUuid": "uuid-observer",
+                "displayName": "Cannot be assigned",
+                "canBeAssign": False,
+                "isBlocked": False,
+            },
+            {"id": 4, "displayName": "No person uuid", "canBeAssign": True, "isBlocked": False},
+        ],
+        status=200,
+    )
+
+    assert client.get_space_users(1) == [("uuid-ok", "Assignable")]
+
+
+@responses.activate
+def test_get_labels_returns_ids(client: JagaClient) -> None:
+    """The value of `task.label_id` is the label id; labels have no `/v1/listRef` dictionary,
+    so they come from a POST search with an empty filter."""
+    _mock_login()
+    responses.add(
+        responses.POST,
+        f"{API}/v1/labels/getPage",
+        json={
+            "content": [
+                {"id": 7, "uuid": "u7", "color": "#fff", "name": "backend", "projects": []},
+                {"id": 8, "uuid": "u8", "color": "#000", "name": "frontend", "projects": []},
+            ],
+            "totalPages": 1,
+            "pageNumber": 0,
+            "totalElements": 2,
+        },
+        status=200,
+    )
+
+    assert client.get_labels() == [("7", "backend"), ("8", "frontend")]
+
+    sent = json.loads(responses.calls[-1].request.body)
+    assert sent == {"searchText": "", "order": "ASC", "orderBy": "name"}
 
 
 @responses.activate

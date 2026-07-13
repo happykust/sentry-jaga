@@ -19,13 +19,16 @@ from sentry_jaga.client.api import JagaClient
 from sentry_jaga.client.exceptions import JagaError
 from sentry_jaga.client.models import Attribute, Project
 from sentry_jaga.fields import (
+    ASSIGNEE_OBJECT_TYPE,
     DESCRIPTION_OBJECT_TYPE,
+    LABEL_OBJECT_TYPE,
     TITLE_OBJECT_TYPE,
     build_attribute_fields,
     extract_title,
     field_name,
     find_attribute,
     form_data_to_attributes,
+    injected_attributes,
 )
 
 logger = logging.getLogger("sentry_jaga.issue_config")
@@ -73,16 +76,25 @@ def _require_projects(client: JagaClient) -> list[Project]:
     return projects
 
 
+def _has_visible(attributes: list[Attribute], object_type: str) -> bool:
+    """Is this attribute both present on the task type and shown in the form?
+
+    Gates the extra fetches for assignees and labels: a task type that has no such attribute
+    (or hides it) must not cost an HTTP request per form render.
+    """
+    attr = find_attribute(attributes, object_type)
+    return attr is not None and attr.visible
+
+
 def _warn_if_no_system_attributes(
     attributes: list[Attribute], project_id: int, type_id: int
 ) -> None:
     """Warn if not a single system attribute was recognised on the task type.
 
-    The mnemonic codes `task.title` / `task.content_data` were inferred from the pattern
-    `task.<snake_case_column>` (the Jaga spec only confirms `task.mcode`, `task.creator_id`
-    and `task.project_id`) and are not confirmed by the docs themselves. If we guessed
-    wrong, the form will quietly come out without a title and a description — and the
-    Sentry context will never reach the task. Let the miss at least be visible in the logs.
+    The mnemonics `task.task_title` / `task.content` are confirmed against a live instance,
+    but they are what a Jaga deployment *happened* to expose, not a documented contract. If a
+    deployment renames them, the form quietly comes out without a title and a description —
+    and the Sentry context never reaches the task. Let the miss be visible in the logs.
     """
     if find_attribute(attributes, TITLE_OBJECT_TYPE) or find_attribute(
         attributes, DESCRIPTION_OBJECT_TYPE
@@ -144,7 +156,25 @@ def build_create_config(
         for attr in attributes
         if attr.dictionary_id is not None and attr.visible
     }
-    fields.extend(build_attribute_fields(attributes, choices_by_dictionary, title, description))
+    # Assignees and labels carry no `dictionaryId`: their values come from endpoints of their
+    # own. Only pay for them when the task type actually shows the attribute.
+    user_choices = (
+        client.get_space_users(project_id)
+        if _has_visible(attributes, ASSIGNEE_OBJECT_TYPE)
+        else None
+    )
+    label_choices = client.get_labels() if _has_visible(attributes, LABEL_OBJECT_TYPE) else None
+
+    fields.extend(
+        build_attribute_fields(
+            attributes,
+            choices_by_dictionary,
+            title,
+            description,
+            user_choices=user_choices,
+            label_choices=label_choices,
+        )
+    )
     return fields
 
 
@@ -157,6 +187,11 @@ def create_task_from_form(client: JagaClient, form_data: dict[str, Any]) -> dict
     payload = form_data_to_attributes(form_data, attributes)
     if not payload:
         raise JagaError("Not a single task attribute was filled in.")
+
+    # The space and the task type have no form field of their own, so nothing above produces
+    # them — and Jaga answers 500 to a create that leaves them out of `attributes`, even
+    # though both ids are right there in the URL. See `injected_attributes`.
+    payload.extend(injected_attributes(attributes, project_id, type_id))
 
     task = client.create_task(project_id, type_id, payload)
 

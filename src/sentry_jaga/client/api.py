@@ -151,6 +151,42 @@ class JagaClient:
         items = sorted(payload.get("items", []), key=lambda item: item.get("orderNum", 0))
         return [(str(item["id"]), item["value"]) for item in items]
 
+    def get_space_users(self, space_id: int) -> list[tuple[str, str]]:
+        """Members of a space a task can be assigned to: (personUuid, displayName) pairs.
+
+        The value of `task.assignee_uuid` is the person UUID — the cross-system id — and NOT
+        the numeric profile `id`, so a profile without one is unusable and dropped.
+
+        Blocked accounts and profiles Jaga marks as not assignable are dropped as well:
+        offering them would only build a task Jaga refuses to accept.
+        """
+        payload = self._authed("GET", f"/v1/project/getUserProfileDtos/{space_id}")
+        items = payload if isinstance(payload, list) else []
+        users: list[tuple[str, str]] = []
+        for item in items:
+            person_uuid = item.get("personUuid")
+            if not person_uuid or not item.get("canBeAssign") or item.get("isBlocked"):
+                continue
+            users.append((str(person_uuid), str(item.get("displayName") or person_uuid)))
+        return users
+
+    def get_labels(self) -> list[tuple[str, str]]:
+        """Every label, as (id, name) pairs — the value of `task.label_id` is the label id.
+
+        Labels have no dictionary of their own: `/v1/listRef` knows nothing about them, and
+        the only listing endpoint is this POST. Every field of the request body is optional;
+        an empty `searchText` means "no filter".
+        """
+        payload = self._authed(
+            "POST",
+            "/v1/labels/getPage",
+            json={"searchText": "", "order": "ASC", "orderBy": "name"},
+        )
+        return [
+            (str(item["id"]), str(item.get("name") or item["id"]))
+            for item in payload.get("content", [])
+        ]
+
     # --- tasks ----------------------------------------------------------
 
     def create_task(

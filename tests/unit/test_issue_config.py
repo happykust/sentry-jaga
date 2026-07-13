@@ -5,6 +5,16 @@ import pytest
 
 from sentry_jaga.client.exceptions import JagaError
 from sentry_jaga.client.models import Attribute, Project, TaskRef, TaskType
+from sentry_jaga.fields import (
+    ASSIGNEE_OBJECT_TYPE,
+    CREATE_TS_OBJECT_TYPE,
+    CREATOR_OBJECT_TYPE,
+    DESCRIPTION_OBJECT_TYPE,
+    LABEL_OBJECT_TYPE,
+    SPACE_OBJECT_TYPE,
+    TITLE_OBJECT_TYPE,
+    TYPE_OBJECT_TYPE,
+)
 from sentry_jaga.issue_config import (
     MIN_QUERY_LENGTH,
     NoProjectsError,
@@ -17,11 +27,44 @@ from sentry_jaga.issue_config import (
     status_comment,
 )
 
-TITLE = Attribute(id=100, name="Title", object_type_name_m="task.title", required=True)
-DESCRIPTION = Attribute(id=101, name="Description", object_type_name_m="task.content_data")
-PRIORITY = Attribute(
-    id=102, name="Priority", object_type_name_m="task.priority", dictionary_id=55, required=True
+# The attributes of a real Jaga task type ("Стандарт"), as the live instance reports them —
+# including the two Jaga demands inside `attributes` even though they are already in the URL.
+SPACE = Attribute(id=90, name="Space", object_type_name_m=SPACE_OBJECT_TYPE, required=True)
+TYPE = Attribute(id=91, name="Task type", object_type_name_m=TYPE_OBJECT_TYPE, required=True)
+TITLE = Attribute(id=100, name="Title", object_type_name_m=TITLE_OBJECT_TYPE, required=True)
+DESCRIPTION = Attribute(id=101, name="Description", object_type_name_m=DESCRIPTION_OBJECT_TYPE)
+ASSIGNEE = Attribute(
+    id=103, name="Assignees", object_type_name_m=ASSIGNEE_OBJECT_TYPE, multiple=True
 )
+LABEL = Attribute(id=104, name="Label", object_type_name_m=LABEL_OBJECT_TYPE, multiple=True)
+# A reference with no dictionary behind it: unsupported, dropped from the form.
+PRIORITY = Attribute(id=102, name="Priority", object_type_name_m="task.priority_id")
+CREATOR = Attribute(id=92, name="Author", object_type_name_m=CREATOR_OBJECT_TYPE)
+CREATE_TS = Attribute(id=93, name="Created at", object_type_name_m=CREATE_TS_OBJECT_TYPE)
+# A dictionary-backed attribute — the only reference kind that lists itself.
+SEVERITY = Attribute(
+    id=110,
+    name="Severity",
+    object_type_name_m="task.flex_severity",
+    dictionary_id=55,
+    required=True,
+)
+
+REAL_ATTRIBUTES = [
+    SPACE,
+    TYPE,
+    TITLE,
+    DESCRIPTION,
+    ASSIGNEE,
+    LABEL,
+    PRIORITY,
+    CREATOR,
+    CREATE_TS,
+    SEVERITY,
+]
+
+USERS = [("uuid-1", "Ivanov Ivan"), ("uuid-2", "Petrov Petr")]
+LABELS = [("7", "backend"), ("8", "frontend")]
 
 
 class FakeClient:
@@ -37,11 +80,13 @@ class FakeClient:
         self._projects = projects if projects is not None else [Project(1, "Platform", "PLT")]
         self._task_types = task_types if task_types is not None else [TaskType(10, "Bug")]
         self._task_types_by_project = task_types_by_project
-        self._attributes = attributes if attributes is not None else [TITLE, DESCRIPTION, PRIORITY]
+        self._attributes = attributes if attributes is not None else list(REAL_ATTRIBUTES)
         self.created: dict[str, Any] | None = None
         self.comments: list[tuple[int, str]] = []
         self.searches: list[tuple[int, str]] = []
         self.attributes_requested: list[tuple[int, int]] = []
+        self.users_requested: list[int] = []
+        self.labels_requested = 0
 
     def get_projects(self) -> list[Project]:
         return self._projects
@@ -58,6 +103,14 @@ class FakeClient:
     def get_dictionary_values(self, dictionary_id: int) -> list[tuple[str, str]]:
         return [("1", "High"), ("2", "Low")]
 
+    def get_space_users(self, space_id: int) -> list[tuple[str, str]]:
+        self.users_requested.append(space_id)
+        return USERS
+
+    def get_labels(self) -> list[tuple[str, str]]:
+        self.labels_requested += 1
+        return LABELS
+
     def create_task(
         self, project_id: int, task_type_id: int, attributes: list[dict[str, Any]]
     ) -> TaskRef:
@@ -73,7 +126,7 @@ class FakeClient:
             "id": 500,
             "code": code,
             "attributes": [
-                {"fieldId": 100, "value": "Login is broken", "objectTypeNameM": "task.title"}
+                {"fieldId": 100, "value": "Login is broken", "objectTypeNameM": TITLE_OBJECT_TYPE}
             ],
         }
 
@@ -89,6 +142,10 @@ def _by_name(fields: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     return {f["name"]: f for f in fields}
 
 
+def _cell(payload: list[dict[str, Any]], field_id: int) -> dict[str, Any] | None:
+    return next((item for item in payload if item["fieldId"] == field_id), None)
+
+
 def test_create_config_builds_cascade() -> None:
     fields = build_create_config(FakeClient(), {}, "Login is broken", "Sentry issue: http://s/1")
     by_name = _by_name(fields)
@@ -99,7 +156,94 @@ def test_create_config_builds_cascade() -> None:
     assert by_name["issue_type"]["choices"] == [("10", "Bug")]
     assert by_name["attr_100"]["default"] == "Login is broken"
     assert by_name["attr_101"]["default"] == "Sentry issue: http://s/1"
-    assert by_name["attr_102"]["choices"] == [("1", "High"), ("2", "Low")]
+    assert by_name["attr_110"]["choices"] == [("1", "High"), ("2", "Low")]
+
+
+def test_create_config_hides_the_attributes_the_cascade_already_asks_for(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """`task.project_id` and `task.type_id` are required attributes of the task type, but the
+    `project` / `issue_type` selects already carry them. Rendering them too would show the user
+    two "Space" boxes — one of which does not drive the cascade. They go into the payload
+    instead (see `test_create_task_from_form_injects_space_and_type`).
+
+    The author and the creation date are Jaga's to fill; asking the user for them is nonsense.
+
+    Dropped on purpose, and not as collateral of the "cannot render this" rule: both are
+    `required`, so falling through to that rule would log a warning blaming two fields the
+    plugin actually submits — right in the log of whoever is debugging a failed create.
+    """
+    with caplog.at_level(logging.WARNING, logger="sentry_jaga.fields"):
+        fields = build_create_config(FakeClient(), {}, "t", "d")
+
+    names = [f["name"] for f in fields]
+    assert "attr_90" not in names  # task.project_id
+    assert "attr_91" not in names  # task.type_id
+    assert "attr_92" not in names  # task.creator_id
+    assert "attr_93" not in names  # task.create_ts
+    # ...and exactly one field asks for the space.
+    assert [f["label"] for f in fields].count("Space") == 1
+    assert "required_attribute_not_supported" not in caplog.text
+
+
+def test_create_config_renders_assignees_from_space_members() -> None:
+    fields = build_create_config(FakeClient(), {}, "t", "d")
+    assignee = _by_name(fields)["attr_103"]
+
+    assert assignee["type"] == "select"
+    assert assignee["multiple"] is True
+    assert assignee["choices"] == USERS
+
+
+def test_create_config_renders_labels() -> None:
+    fields = build_create_config(FakeClient(), {}, "t", "d")
+    label = _by_name(fields)["attr_104"]
+
+    assert label["type"] == "select"
+    assert label["multiple"] is True
+    assert label["choices"] == LABELS
+
+
+def test_create_config_skips_an_unsupported_reference_attribute() -> None:
+    """Priority is a reference with no dictionary: we cannot list its values, so it is left out
+    rather than rendered as a text box the user would fill with "High"."""
+    fields = build_create_config(FakeClient(), {}, "t", "d")
+    assert "attr_102" not in _by_name(fields)
+
+
+def test_create_config_warns_about_a_required_attribute_it_cannot_render(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    required_priority = Attribute(
+        id=102, name="Priority", object_type_name_m="task.priority_id", required=True
+    )
+    client = FakeClient(attributes=[TITLE, required_priority])
+
+    with caplog.at_level(logging.WARNING, logger="sentry_jaga.fields"):
+        fields = build_create_config(client, {}, "t", "d")
+
+    assert "attr_102" not in _by_name(fields)
+    assert "required_attribute_not_supported" in caplog.text
+
+
+def test_create_config_does_not_fetch_users_or_labels_when_unused() -> None:
+    """A task type without assignees or labels must not pay an HTTP request per form render —
+    and the create form re-renders on every keystroke of the cascade."""
+    client = FakeClient(attributes=[TITLE, DESCRIPTION])
+
+    build_create_config(client, {}, "t", "d")
+
+    assert client.users_requested == []
+    assert client.labels_requested == 0
+
+
+def test_create_config_fetches_space_members_for_the_selected_space() -> None:
+    client = FakeClient(
+        projects=[Project(1, "Platform", "PLT"), Project(2, "Billing", "BIL")],
+    )
+    build_create_config(client, {"project": "2"}, "t", "d")
+
+    assert client.users_requested == [2]
 
 
 def test_create_config_honours_selected_params() -> None:
@@ -170,6 +314,42 @@ def test_create_config_without_task_types_stops_at_project() -> None:
     assert [f["name"] for f in fields] == ["project"]
 
 
+# --- create ----------------------------------------------------------------
+
+
+def test_create_task_from_form_injects_space_and_type() -> None:
+    """REGRESSION. Jaga answers 500 to a create whose `attributes` omit `task.project_id` and
+    `task.type_id` — "Поле "Пространство" обязательно для заполнения" — even though both ids
+    are already in the URL of `POST /v1/task/createByTaskType/{project}/{type}`.
+
+    Neither has a form field of its own (the cascade selects play that role), so the payload
+    built from `attr_*` keys alone can never contain them, and EVERY create from Sentry used
+    to fail. Both cells must be there, carrying the ids the user picked, marked as references.
+    """
+    client = FakeClient()
+
+    create_task_from_form(
+        client,
+        {"project": "1", "issue_type": "10", "attr_100": "Login is broken"},
+    )
+
+    assert client.created is not None
+    payload = client.created["attributes"]
+
+    assert _cell(payload, SPACE.id) == {
+        "fieldId": 90,
+        "value": 1,
+        "referenceValue": True,
+        "addInfo": {},
+    }
+    assert _cell(payload, TYPE.id) == {
+        "fieldId": 91,
+        "value": 10,
+        "referenceValue": True,
+        "addInfo": {},
+    }
+
+
 def test_create_task_from_form_sends_attributes() -> None:
     client = FakeClient()
     result = create_task_from_form(
@@ -179,19 +359,51 @@ def test_create_task_from_form_sends_attributes() -> None:
             "issue_type": "10",
             "attr_100": "Login is broken",
             "attr_101": "body",
-            "attr_102": "1",
+            "attr_110": "1",
         },
     )
 
     assert result["key"] == "PLT-500"
     assert result["title"] == "Login is broken"
     assert client.created is not None
-    assert [a["fieldId"] for a in client.created["attributes"]] == [100, 101, 102]
     assert client.created["project_id"] == 1
     assert client.created["task_type_id"] == 10
 
+    payload = client.created["attributes"]
+    assert _cell(payload, 100) is not None
+    assert _cell(payload, 101) is not None
+    assert _cell(payload, 110) is not None
+
+
+def test_create_task_from_form_sends_assignees_and_labels_as_references() -> None:
+    client = FakeClient()
+    create_task_from_form(
+        client,
+        {
+            "project": "1",
+            "issue_type": "10",
+            "attr_100": "Login is broken",
+            "attr_103": ["uuid-1", "uuid-2"],
+            "attr_104": ["7"],
+        },
+    )
+
+    assert client.created is not None
+    payload = client.created["attributes"]
+
+    assignee = _cell(payload, 103)
+    assert assignee is not None
+    assert assignee["value"] == ["uuid-1", "uuid-2"]
+    assert assignee["referenceValue"] is True
+
+    label = _cell(payload, 104)
+    assert label is not None
+    assert label["value"] == ["7"]
+    assert label["referenceValue"] is True
+
 
 def test_create_task_from_form_rejects_empty_form() -> None:
+    """An empty form is refused before the injected cells make the payload look non-empty."""
     with pytest.raises(JagaError):
         create_task_from_form(FakeClient(), {"project": "1", "issue_type": "10"})
 
@@ -218,8 +430,9 @@ def test_created_task_needs_no_lookup_to_resolve_its_id() -> None:
 
 
 def test_warns_when_no_system_attribute_recognised(caplog: pytest.LogCaptureFixture) -> None:
-    """The task.title/task.content_data mnemonics are not confirmed by the Jaga spec. If not
-    a single system attribute is recognised, the miss must not degrade silently."""
+    """The title/description mnemonics hold on the instance we probed, but they are not a
+    documented contract. If not a single one is recognised, the miss must not degrade
+    silently: the form would come out with no title and no Sentry context."""
     exotic = Attribute(id=200, name="Subject", object_type_name_m="task.subject_line")
 
     with caplog.at_level(logging.WARNING, logger="sentry_jaga.issue_config"):
@@ -232,9 +445,12 @@ def test_does_not_warn_when_system_attributes_are_present(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     with caplog.at_level(logging.WARNING, logger="sentry_jaga.issue_config"):
-        build_create_config(FakeClient(), {}, "t", "d")
+        build_create_config(FakeClient(attributes=[TITLE, DESCRIPTION]), {}, "t", "d")
 
     assert caplog.records == []
+
+
+# --- link, search, sync ----------------------------------------------------
 
 
 def test_link_config_searches_when_query_given() -> None:
