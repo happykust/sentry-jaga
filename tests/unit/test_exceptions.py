@@ -33,6 +33,36 @@ def test_error_message_uses_body_message() -> None:
     assert "This field is required" in str(err)
 
 
+def test_error_message_unwraps_the_json_string_jaga_nests_in_error() -> None:
+    """Jaga hides the real message one level down, as a JSON string inside `error`. Taking the
+    key at face value shows the user a JSON sheet instead of the one sentence that matters.
+
+    This is the exact body a create without `task.project_id` comes back with.
+    """
+    body = {
+        "timestamp": "2026-07-13T10:00:00.000+00:00",
+        "status": 500,
+        "error": (
+            '{"status":500,'
+            '"message":"Поле \\"Пространство\\" обязательно для заполнения '
+            'для типа задачи = 33532",'
+            '"path":"/external-api/v1/task/createByTaskType/1/33532"}'
+        ),
+    }
+
+    err = error_from_response(500, body)
+
+    assert 'Поле "Пространство" обязательно для заполнения для типа задачи = 33532' in str(err)
+    assert "timestamp" not in str(err)
+    assert '"path"' not in str(err)
+
+
+def test_error_message_keeps_a_plain_error_string_as_is() -> None:
+    """Not every `error` is JSON — one that does not parse is already the message."""
+    err = error_from_response(500, {"error": "Internal Server Error"})
+    assert "Internal Server Error" in str(err)
+
+
 def test_error_message_falls_back_when_body_unparseable() -> None:
     err = error_from_response(500, "boom")
     assert "500" in str(err)
