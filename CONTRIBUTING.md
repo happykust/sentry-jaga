@@ -55,6 +55,14 @@ uv run ruff check . && uv run ruff format --check . && uv run mypy
 The whole project is in English: documentation, code comments, and user-facing strings
 (field labels in the UI, error messages).
 
+The one exception is text we quote from Jaga verbatim — its error messages and the names of
+its entities. **Do not translate those.** They appear in the fixture of the error-unwrapping
+test and in the docstrings that explain why the space/type cells are injected, and they are
+deliberately kept byte-for-byte identical to what Jaga returns: someone who meets
+`Поле "Пространство" обязательно для заполнения` in the Sentry logs can grep the codebase for
+it and land on the explanation. Translating them would break that link and make the test stop
+checking Jaga's real response format.
+
 ## Pull request
 
 1. Fork the repository and branch off `main`.
