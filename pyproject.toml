@@ -1,0 +1,86 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "sentry-jaga"
+version = "0.1.0"
+description = "Интеграция Sentry с таск-трекером Яга (Ростелеком)"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.13"
+authors = [{ name = "Kirill Nikolaevskiy", email = "lhappykust@gmail.com" }]
+keywords = ["sentry", "jaga", "integration", "issue-tracker"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Software Development :: Bug Tracking",
+    "Typing :: Typed",
+]
+dependencies = ["requests>=2.31"]
+
+[project.urls]
+Homepage = "https://github.com/happykust/sentry-jaga"
+Repository = "https://github.com/happykust/sentry-jaga"
+Changelog = "https://github.com/happykust/sentry-jaga/blob/main/CHANGELOG.md"
+Issues = "https://github.com/happykust/sentry-jaga/issues"
+
+[project.entry-points."sentry.apps"]
+sentry_jaga = "sentry_jaga.apps.JagaAppConfig"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "responses>=0.25",
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "types-requests",
+    "pre-commit>=3.8",
+]
+# Sentry НЕТ на PyPI выше 23.7.1 — ставим из исходников по тегу.
+# Отдельная группа: тяжёлая (157 транзитивных зависимостей) и может не собраться,
+# поэтому она НЕ входит в дефолтный `uv sync`. Ставится явно:
+#   uv sync --group sentry
+sentry = [
+    "sentry @ git+https://github.com/getsentry/sentry@26.3.1",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sentry_jaga"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "C4", "RUF", "TID"]
+ignore = ["RUF001", "RUF002", "RUF003"]  # кириллица в строках/комментариях — намеренно
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+packages = ["sentry_jaga"]
+mypy_path = "src"
+# sentry не типизирован полностью — не падаем на его внутренностях
+[[tool.mypy.overrides]]
+module = ["sentry.*", "django.*"]
+ignore_missing_imports = true
+follow_imports = "skip"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+markers = ["sentry: тесты, требующие установленного пакета sentry"]
+
+[tool.coverage.run]
+source = ["src/sentry_jaga"]
+branch = true
+
+[tool.coverage.report]
+exclude_lines = ["pragma: no cover", "if TYPE_CHECKING:", "raise NotImplementedError"]
