@@ -257,4 +257,4 @@ class JagaIssuesTest(APITestCase):
         assert by_name["externalIssue"]["choices"] == [("PLT-5", "PLT-5 — Login is broken")]
 
     def test_issue_url(self) -> None:
-        assert self.installation.get_issue_url("PLT-500") == f"{BASE}/task/PLT-500"
+        assert self.installation.get_issue_url("PLT-500") == f"{BASE}/browse/PLT-500"

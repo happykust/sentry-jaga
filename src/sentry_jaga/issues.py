@@ -47,7 +47,9 @@ class JagaIssuesMixin(IssueBasicIntegration):
         return url.rstrip("/")
 
     def get_issue_url(self, key: str) -> str:
-        return f"{self.instance_url}/task/{key}"
+        # The browser URL of a task card, shown to humans in Sentry's "Linked Issues"
+        # panel. Confirmed against a live Jaga instance: /browse/<code>, not /task/<code>.
+        return f"{self.instance_url}/browse/{key}"
 
     def get_issue_display_name(self, external_issue: Any) -> str:
         if external_issue.title:
