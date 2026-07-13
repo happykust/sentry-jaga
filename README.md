@@ -68,6 +68,21 @@ is cached in Sentry's Django cache.
   attributes of the chosen type (`GET /v1/project/{projectId}/taskType/{taskTypeId}`), which
   are rendered as form fields. Submitting creates the task through
   `POST /v1/task/createByTaskType/{projectId}/{taskTypeId}`.
+
+  Which attributes the form offers is decided by what the plugin can list the values of:
+
+  | Field | Rendered as | Values from |
+  | --- | --- | --- |
+  | Title (`task.task_title`) | text, pre-filled with the Sentry issue title | — |
+  | Description (`task.content`) | textarea, pre-filled with the Sentry context | — |
+  | Any attribute with a dictionary | select | `GET /v1/listRef/{dictionaryId}/any` |
+  | Assignees (`task.assignee_uuid`) | multi-select | `GET /v1/project/getUserProfileDtos/{projectId}` (blocked and non-assignable members are filtered out) |
+  | Label (`task.label_id`) | multi-select | `POST /v1/labels/getPage` |
+
+  The space and the task type are **not** shown as attributes — the cascade selects above
+  already ask for them — but they are still submitted inside `attributes`, because Jaga
+  rejects a create without them even though both ids are in the URL. The author and the
+  creation date are filled in by Jaga.
 - **Link.** A task is searched by title or code (`GET /v1/task/searchByTitleCode`, starting
   from 3 characters of the query), then resolved by code
   (`GET /v1/task/findExtendedWithFlexField/code/{taskCode}`).
@@ -79,6 +94,15 @@ the package creates no tables of its own.
 
 ## Limitations
 
+- **Not every task field can be filled from Sentry.** Priority, version, parent, total
+  estimate, deadline, and the planned/actual work periods are left out of the create form:
+  Jaga exposes them as references or typed values with no endpoint to list them from, and a
+  free-text box over an id column would only produce values Jaga rejects. Create the task
+  from Sentry, then fill those fields in Jaga itself.
+
+  If a task type marks one of them as **required**, the create will fail with Jaga's own
+  message naming the field, and the plugin logs a `required_attribute_not_supported` warning
+  with its mnemonic. Either make the field optional in Jaga, or create such tasks by hand.
 - **The sync is one-way, Sentry → Jaga.** Inbound Jaga → Sentry webhooks are not supported:
   changes made on the Jaga side do not reach Sentry.
 - **No live autocomplete when linking.** A task is searched by refreshing the form rather
