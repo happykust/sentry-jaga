@@ -62,33 +62,85 @@ jobs:
   integration:
     name: Sentry layer tests (non-blocking)
     runs-on: ubuntu-latest
-    # Sentry is not published to PyPI above 23.7.1 and can only be installed from source
-    # (157 dependencies, no [build-system]). The install may simply fail to come up, so
-    # this job does NOT block a merge. The blocking gates are lint + unit.
+    # Sentry cannot be installed as a package (not on PyPI above 23.7.1; its source tree has no
+    # [build-system] and `version = "0.0.0"`), so these tests run inside Sentry's *own*
+    # environment: a checkout of the tag, its lock installed by hand, its pytest pointed at our
+    # test directory. The whole recipe is written up in CONTRIBUTING.md.
+    #
+    # NON-BLOCKING ON PURPOSE: the recipe is verified locally (16/16 green against a real Sentry
+    # 26.3.1), but it has never yet run on a GitHub runner — a fresh runner may trip over the
+    # install or the containers. Remove `continue-on-error` as soon as this job has gone green
+    # here once. The gates that do block a merge are lint, unit and typecheck-sentry.
     continue-on-error: true
-    services:
-      postgres:
-        image: postgres:14
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: sentry
-        ports: ["5432:5432"]
-        options: >-
-          --health-cmd pg_isready --health-interval 10s
-          --health-timeout 5s --health-retries 5
-      redis:
-        image: redis:7
-        ports: ["6379:6379"]
+    env:
+      SENTRY_SRC: ${{ github.workspace }}/.sentry-src
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out sentry-jaga
+        uses: actions/checkout@v4
+
+      - name: Check out the Sentry 26.3.1 sources (code only — there is nothing to pip install)
+        uses: actions/checkout@v4
+        with:
+          repository: getsentry/sentry
+          ref: 26.3.1
+          path: .sentry-src
+
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
-      - name: Install sentry from source (optional group)
-        run: uv sync --group sentry
+
+      # Postgres, Redis, ClickHouse, Snuba. Why exactly these four (and why no Kafka/Relay):
+      # see the comments in docker-compose.test.yml. `--wait` blocks until every healthcheck
+      # is green, so the test step cannot start against a half-booted Snuba.
+      - name: Start the test infrastructure
+        run: docker compose -f docker-compose.test.yml up -d --wait
+
+      # Sentry's uv.lock, flattened to plain pins. Exporting (rather than `uv sync`) lets the
+      # install run from a neutral directory below.
+      - name: Export the Sentry lock
+        working-directory: .sentry-src
+        run: uv export --frozen --no-hashes --no-emit-project --group dev -o "$RUNNER_TEMP/sentry-reqs.txt"
+
+      # Run from $RUNNER_TEMP, NOT from the checkout: inside it, `uv pip` would pick up Sentry's
+      # own [tool.uv] block, which pins a default index meant for its internal image build.
+      # The two indexes below cover both halves of the lock: ordinary packages from PyPI, and
+      # Sentry's own forks/wheels, which exist only on its public devinfra index.
+      - name: Install the Sentry environment
+        working-directory: ${{ runner.temp }}
+        run: |
+          uv venv --python 3.13 "$SENTRY_SRC/.venv"
+          uv pip install --python "$SENTRY_SRC/.venv/bin/python" \
+            --index-url https://pypi.org/simple \
+            --extra-index-url https://pypi.devinfra.sentry.io/simple \
+            --index-strategy unsafe-best-match \
+            -r "$RUNNER_TEMP/sentry-reqs.txt"
+          # The lock pins xmlsec==1.3.14, whose bundled libxml2 does not match the one lxml is
+          # built against; `import xmlsec` then dies with "libxml2 library version mismatch".
+          # Sentry's SAML2 auth provider imports it during django.setup() — so with the locked
+          # version nothing boots at all. 1.3.16+ fixes the mismatch.
+          uv pip install --python "$SENTRY_SRC/.venv/bin/python" 'xmlsec>=1.3.16'
+
+      # Sentry installs itself editable with its own tool instead of a build backend (its
+      # pyproject says so in as many words). `uv pip install -e .sentry-src` does NOT work:
+      # with no [build-system], the setuptools fallback chokes on Sentry's [project] table.
+      - name: Install Sentry (editable)
+        working-directory: .sentry-src
+        run: .venv/bin/python tools/fast_editable.py --path .
+
+      - name: Install sentry-jaga into the Sentry environment
+        working-directory: ${{ runner.temp }}
+        run: uv pip install --python "$SENTRY_SRC/.venv/bin/python" -e "$GITHUB_WORKSPACE"
+
+      # Sentry's pytest, our tests. Every flag is load-bearing:
+      #   PYTHONPATH  — Sentry appends its repo-root `fixtures` package to INSTALLED_APPS, so
+      #                 the repo root has to be importable or django.setup() dies.
+      #   -c          — Sentry's pytest config, not ours; it carries `--nomigrations`, without
+      #                 which the test DBs are built by replaying Sentry's whole migration history.
+      #   -p          — Sentry's pytest plugin (normally pulled in by its tests/conftest.py, which
+      #                 we cannot load: both repos have a top-level `tests` package and it would
+      #                 shadow ours). It configures Django, the silo databases and initialize_app().
       - name: Run the Sentry layer tests
+        working-directory: .sentry-src
         env:
-          DATABASE_URL: postgres://postgres:postgres@localhost:5432/sentry
-          SENTRY_REDIS_HOST: localhost
-        run: uv run pytest tests/integration -v
+          PYTHONPATH: ${{ github.workspace }}/.sentry-src
+        run: .venv/bin/pytest -c pyproject.toml -p sentry.testutils.pytest "$GITHUB_WORKSPACE/tests/integration" -v

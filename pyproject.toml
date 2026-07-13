@@ -52,13 +52,15 @@ dev = [
     # divergence costs the service account password.
     "django>=5.2.11,<6",
 ]
-# Sentry is NOT on PyPI above 23.7.1 — install it from source, by tag.
-# A separate group: it is heavy (157 transitive dependencies) and may fail to build, so it
-# is NOT part of the default `uv sync`. Install it explicitly:
-#   uv sync --group sentry
-sentry = [
-    "sentry @ git+https://github.com/getsentry/sentry@26.3.1",
-]
+# There is deliberately NO `sentry` dependency group. Sentry cannot be installed as a package
+# at all: above 23.7.1 it is not on PyPI, and its source tree is not installable either — the
+# pyproject has no `[build-system]` and carries `version = "0.0.0"` (the real metadata lives in
+# setup.cfg; upstream installs itself with `tools/fast_editable.py`, not a build backend).
+# `uv sync --group sentry` used to be advertised here and could never have worked.
+#
+# The tests of the Sentry layer therefore run inside Sentry's *own* environment, against a
+# checkout of the tag: see the "Tests of the Sentry layer" section of CONTRIBUTING.md and the
+# `integration` job in .github/workflows/ci.yml.
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/sentry_jaga"]
@@ -121,13 +123,15 @@ markers = ["sentry: tests that require the sentry package to be installed"]
 [tool.coverage.run]
 source = ["src/sentry_jaga"]
 branch = true
-# The Sentry layer is uncoverable by construction, and keeping it in the denominator would
-# mean reporting a knowingly false number. These modules import `sentry` at module level:
-# the package is not on PyPI, installing it from source is heavy, and its test stack needs a
-# running Postgres/Redis/Kafka/Snuba — an environment the unit run does not have and never
-# will (which is why tests/integration/ skip via `pytest.importorskip("sentry")`).
-# Instead of tests, their correctness is held by mypy against the real Sentry sources — a
-# separate, blocking CI job.
+# These modules import `sentry` at module level, so they cannot even be imported in this
+# environment — Sentry is not installable as a package (see the note by the dependency groups).
+# The unit run therefore never touches them, and keeping them in the denominator would mean
+# reporting a knowingly false number; hence `tests/integration/` skip via
+# `pytest.importorskip("sentry")`.
+#
+# They are not untested: `tests/integration/` drives them against a real Sentry, inside Sentry's
+# own environment (CONTRIBUTING.md, "Tests of the Sentry layer"; the `integration` CI job). What
+# runs on *every* PR, though, is mypy against the real Sentry sources — a separate, blocking job.
 #
 # pipeline.py is DELIBERATELY absent from this list: it imports `sentry` only inside
 # `InstallationConfigView.dispatch`, while the form and `verify_credentials` are tested on
