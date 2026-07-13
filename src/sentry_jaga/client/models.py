@@ -103,11 +103,3 @@ class TaskRef:
     @classmethod
     def from_api(cls, payload: dict[str, Any]) -> TaskRef:
         return cls(id=payload["id"], code=payload["code"], title=payload.get("title", ""))
-
-
-@dataclass(frozen=True, slots=True)
-class Task:
-    id: int
-    code: str
-    title: str
-    description: str
