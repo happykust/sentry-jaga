@@ -1,8 +1,8 @@
-"""Issue-слой Sentry: тонкий делегат поверх `sentry_jaga.issue_config`.
+"""Sentry issue layer: a thin delegate on top of `sentry_jaga.issue_config`.
 
-Вся логика (сборка полей, конвертация формы, поиск) живёт в ядре и покрыта
-юнит-тестами без Sentry. Здесь — только извлечение данных из объектов Sentry
-и трансляция ошибок.
+All the logic (building fields, converting the form, searching) lives in the core and is
+covered by unit tests that do not need Sentry. What is left here is pulling data out of
+Sentry objects and translating errors.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 
 @contextmanager
 def _as_integration_error() -> Iterator[None]:
-    """Перевести ошибки ядра в исключения, которые понимает Sentry."""
+    """Translate core errors into exceptions that Sentry understands."""
     try:
         yield
     except JagaNotFoundError as exc:
@@ -36,9 +36,9 @@ def _as_integration_error() -> Iterator[None]:
 
 
 class JagaIssuesMixin(IssueBasicIntegration):
-    """Реализация issue-контракта Sentry поверх ядра."""
+    """Implementation of Sentry's issue contract on top of the core."""
 
-    def get_client(self) -> JagaClient:  # переопределяется в JagaIntegration
+    def get_client(self) -> JagaClient:  # overridden in JagaIntegration
         raise NotImplementedError
 
     @property
@@ -58,19 +58,19 @@ class JagaIssuesMixin(IssueBasicIntegration):
         return str(data["key"])
 
     def get_persisted_default_config_fields(self) -> Sequence[str]:
-        # Абстрактный метод `IssueBasicIntegration`: без него класс остаётся абстрактным
-        # и Sentry не может создать инсталляцию. Значения формы не персистим — каскад
-        # создания (`build_create_config`) не читает `get_defaults`.
+        # Abstract method of `IssueBasicIntegration`: without it the class stays abstract
+        # and Sentry cannot create an installation. We do not persist form values — the
+        # create cascade (`build_create_config`) does not read `get_defaults`.
         return []
 
     def _defaults_from_group(self, group: Group | None) -> tuple[str, str]:
-        """Предзаполнение названия и описания задачи данными Sentry-issue."""
+        """Pre-fill the task title and description with Sentry issue data."""
         if group is None:
             return "", ""
         event = group.get_latest_event()
-        # `IssueBasicIntegration.get_group_body` в Sentry не аннотирован, а strict
-        # запрещает вызовы нетипизированных функций. Ignore нужен только при проверке
-        # против исходников Sentry (см. warn_unused_ignores для этого модуля).
+        # `IssueBasicIntegration.get_group_body` is not annotated in Sentry, and strict mode
+        # forbids calling untyped functions. The ignore is only needed when checking against
+        # the Sentry sources (see warn_unused_ignores for this module).
         body: str = (
             self.get_group_body(group, event)  # type: ignore[no-untyped-call]
             if event is not None

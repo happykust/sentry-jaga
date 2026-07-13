@@ -1,6 +1,6 @@
-"""Django-приложение пакета. Регистрируется через entry point `sentry.apps`.
+"""Django app for the package. Registered through the `sentry.apps` entry point.
 
-Нужно, чтобы Django нашёл шаблон установочной формы
+Required so that Django can find the installation form template
 (`sentry_jaga/templates/sentry_jaga/config.html`).
 """
 

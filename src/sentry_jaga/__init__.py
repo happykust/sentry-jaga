@@ -1,8 +1,8 @@
-"""Интеграция Sentry с таск-трекером Яга."""
+"""Sentry integration for the Jaga issue tracker."""
 
 from importlib.metadata import version
 
-# Единственный источник версии — `[project] version` в pyproject.toml, откуда её
-# берут метаданные установленного дистрибутива. Дублировать литерал здесь значит
-# гарантированно однажды забыть его обновить.
+# The single source of truth for the version is `[project] version` in pyproject.toml,
+# which is where the installed distribution's metadata comes from. Duplicating the
+# literal here would guarantee that one day we forget to update it.
 __version__ = version("sentry-jaga")

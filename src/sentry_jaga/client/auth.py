@@ -1,4 +1,4 @@
-"""Управление токеном доступа к Яге: логин, рефреш, кэширование."""
+"""Jaga access token management: login, refresh, caching."""
 
 from __future__ import annotations
 
@@ -12,11 +12,11 @@ DEFAULT_LEEWAY_SECONDS = 30
 
 
 class Cache(Protocol):
-    """Минимальный контракт кэша (совместим с Django cache).
+    """Minimal cache contract (compatible with the Django cache).
 
-    Внедряется снаружи — ядро не знает про Django. Хранит и токен доступа, и
-    короткоживущие справочники (список пространств), поэтому значение — `dict[str, Any]`,
-    а не только строковые поля токена.
+    Injected from the outside — the core knows nothing about Django. It stores both the
+    access token and short-lived reference data (the list of spaces), so a value is a
+    `dict[str, Any]` rather than just the string fields of a token.
     """
 
     def get(self, key: str) -> dict[str, Any] | None: ...
@@ -27,7 +27,7 @@ class Cache(Protocol):
 
 
 class InMemoryCache:
-    """Кэш в памяти процесса. Дефолт и удобен в тестах."""
+    """In-process cache. The default, and convenient in tests."""
 
     def __init__(self) -> None:
         self._data: dict[str, dict[str, Any]] = {}
@@ -43,7 +43,7 @@ class InMemoryCache:
 
 
 class TokenManager:
-    """Отдаёт валидный access-токен, обновляя его по мере необходимости."""
+    """Hands out a valid access token, renewing it as needed."""
 
     def __init__(
         self,
@@ -66,7 +66,8 @@ class TokenManager:
             token = self._store(self._login())
         if not token.is_expired(self._leeway):
             return token.access_token
-        # Токен на грани истечения: пробуем рефреш, при любом сбое — полный релогин.
+        # The token is about to expire: try a refresh and fall back to a full re-login
+        # on any failure.
         try:
             refreshed = self._refresh(token.refresh_token)
         except Exception:
@@ -74,7 +75,7 @@ class TokenManager:
         return self._store(refreshed).access_token
 
     def invalidate(self) -> None:
-        """Сбросить кэш — следующий вызов сделает полный логин."""
+        """Drop the cache entry — the next call will perform a full login."""
         self._cache.delete(self._cache_key)
 
     def _read_cache(self) -> Token | None:

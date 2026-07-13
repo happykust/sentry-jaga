@@ -1,4 +1,4 @@
-"""Односторонняя синхронизация статуса Sentry → Яга (тонкий делегат)."""
+"""One-way status sync, Sentry -> Jaga (a thin delegate)."""
 
 from __future__ import annotations
 
@@ -18,10 +18,11 @@ logger = logging.getLogger("sentry_jaga.sync")
 
 
 class JagaSyncMixin(JagaIssuesMixin, IssueSyncIntegration):
-    """Комментирует задачу Яги при смене статуса Sentry-issue."""
+    """Comments on the Jaga task whenever the Sentry issue changes status."""
 
     outbound_status_key = "sync_status_forward"
-    # Синк ассайни и inbound-синк (вебхуки Яга→Sentry) не поддерживаются в этой версии.
+    # Assignee sync and inbound sync (Jaga -> Sentry webhooks) are not supported in this
+    # version.
     outbound_assignee_key = None
     inbound_status_key = None
     inbound_assignee_key = None
@@ -33,15 +34,16 @@ class JagaSyncMixin(JagaIssuesMixin, IssueSyncIntegration):
         return bool(config.get("sync_status_forward", True))
 
     def get_organization_config(self) -> Sequence[Any]:
-        # `default` обязателен: `get_config_data()` до первого сохранения возвращает {},
-        # и без него чекбокс отрендерится выключенным, хотя синк по факту включён
-        # (см. `should_sync`). Первый же «Save» отправил бы false и молча вырубил синк.
+        # `default` is mandatory: before the first save, `get_config_data()` returns {}, and
+        # without it the checkbox would render as off even though the sync is in fact on
+        # (see `should_sync`). The very first "Save" would then send false and silently kill
+        # the sync.
         return [
             {
                 "name": "sync_status_forward",
                 "type": "boolean",
-                "label": "Синхронизировать статус в Ягу",
-                "help": "Отражать закрытие и переоткрытие Sentry-issue в связанной задаче Яги.",
+                "label": "Sync status to Jaga",
+                "help": "Reflect resolving and reopening a Sentry issue in the linked Jaga task.",
                 "default": True,
             },
         ]
@@ -56,7 +58,7 @@ class JagaSyncMixin(JagaIssuesMixin, IssueSyncIntegration):
             )
             client.create_comment(task_id, issue_config.status_comment(is_resolved))
         except JagaError:
-            # Недоступность Яги не должна ломать resolve в Sentry.
+            # Jaga being unavailable must not break resolving an issue in Sentry.
             logger.warning(
                 "jaga.sync.status_outbound_failed",
                 extra={"key": external_issue.key},
@@ -70,11 +72,12 @@ class JagaSyncMixin(JagaIssuesMixin, IssueSyncIntegration):
         assign: bool = True,
         **kwargs: Any,
     ) -> None:
-        # Абстрактный метод `IssueSyncIntegration`: без него класс остаётся абстрактным
-        # и Sentry не может создать инсталляцию. Синк ассайни не поддерживается
-        # (`outbound_assignee_key = None`, `should_sync` вернёт False), поэтому — no-op.
+        # Abstract method of `IssueSyncIntegration`: without it the class stays abstract and
+        # Sentry cannot create an installation. Assignee sync is not supported
+        # (`outbound_assignee_key = None`, and `should_sync` returns False), so this is a
+        # no-op.
         return None
 
     def get_resolve_sync_action(self, data: Mapping[str, Any]) -> ResolveSyncAction:
-        # Входящие вебхуки Яга→Sentry в этой версии не поддерживаются.
+        # Inbound Jaga -> Sentry webhooks are not supported in this version.
         return ResolveSyncAction.NOOP

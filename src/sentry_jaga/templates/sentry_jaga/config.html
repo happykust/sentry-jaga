@@ -1,19 +1,19 @@
 {% extends "sentry/bases/modal.html" %}
 {% load i18n %}
 
-{% block title %}Подключение Яги | {{ block.super }}{% endblock %}
+{% block title %}Connect Jaga | {{ block.super }}{% endblock %}
 
 {% block main %}
-  <h3>Подключение Яги</h3>
+  <h3>Connect Jaga</h3>
   <p>
-    Укажите адрес инсталляции Яги и учётные данные сервисного аккаунта.
-    Sentry будет создавать задачи и комментарии от его имени.
+    Enter the URL of your Jaga instance and the credentials of a service account.
+    Sentry will create tasks and comments on its behalf.
   </p>
   <form action="" method="POST">
     {% csrf_token %}
     {{ form.as_p }}
     <div class="form-actions">
-      <button type="submit" class="btn btn-primary">Подключить</button>
+      <button type="submit" class="btn btn-primary">Connect</button>
     </div>
   </form>
 {% endblock %}

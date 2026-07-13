@@ -1,4 +1,4 @@
-"""Установка интеграции: форма ввода адреса Яги и сервисной учётки."""
+"""Integration installation: the form for the Jaga URL and service account."""
 
 from __future__ import annotations
 
@@ -18,45 +18,44 @@ if TYPE_CHECKING:
 
 
 def verify_credentials(instance_url: str, email: str, password: str) -> None:
-    """Проверить, что Яга доступна и сервисная учётка валидна."""
+    """Check that Jaga is reachable and the service account credentials are valid."""
     client = JagaClient(instance_url=instance_url, email=email, password=password)
     try:
         client.login()
     except JagaAuthError as exc:
         raise ValidationError(
-            "Яга отклонила учётные данные. Проверьте email и пароль сервисного аккаунта."
+            "Jaga rejected the credentials. Check the email and password of the service account."
         ) from exc
     except JagaApiError as exc:
-        raise ValidationError(f"Яга вернула ошибку при входе: {exc}") from exc
+        raise ValidationError(f"Jaga returned an error on login: {exc}") from exc
     except requests.RequestException as exc:
-        raise ValidationError(
-            f"Не удалось подключиться к Яге по адресу {instance_url}: {exc}"
-        ) from exc
+        raise ValidationError(f"Could not connect to Jaga at {instance_url}: {exc}") from exc
 
 
 class InstallationForm(forms.Form):
-    # `assume_scheme="https"` — не косметика: в Django 5.x (его и везёт Sentry 26.3.1)
-    # URLField без этого аргумента достраивает адрес без схемы до `http://`, а Sentry
-    # не выставляет FORMS_URLFIELD_ASSUME_HTTPS. Админ вводит `jaga.example.com` —
-    # и пароль сервисного аккаунта уходит на верификацию открытым текстом, а http-адрес
-    # навсегда оседает в `Integration.metadata`. Аргумент работает и в Django 6.x.
+    # `assume_scheme="https"` is not cosmetic: on Django 5.x (which is what Sentry 26.3.1
+    # ships) a URLField without this argument completes a schemeless address to `http://`,
+    # and Sentry does not set FORMS_URLFIELD_ASSUME_HTTPS. An admin types
+    # `jaga.example.com` — and the service account password goes out for verification in
+    # plain text, while the http address settles into `Integration.metadata` forever. The
+    # argument works on Django 6.x too.
     instance_url = forms.URLField(
-        label="Адрес Яги",
+        label="Jaga URL",
         assume_scheme="https",
-        help_text="Базовый URL инсталляции Яги, например https://jaga.example.com",
+        help_text="Base URL of the Jaga instance, for example https://jaga.example.com",
         widget=forms.TextInput(attrs={"placeholder": "https://jaga.example.com"}),
     )
     email = forms.EmailField(
-        label="Email сервисного аккаунта",
-        help_text="Учётная запись, от имени которой Sentry будет работать с Ягой.",
+        label="Service account email",
+        help_text="The account Sentry will use to act in Jaga.",
     )
     password = forms.CharField(
-        label="Пароль сервисного аккаунта",
+        label="Service account password",
         widget=forms.PasswordInput(),
     )
 
     def clean(self) -> dict[str, Any]:
-        # Аннотация нужна mypy: без stubs у Django `Form.clean()` возвращает Any.
+        # The annotation is for mypy: without Django stubs, `Form.clean()` returns Any.
         data: dict[str, Any] = super().clean()
         instance_url = data.get("instance_url")
         email = data.get("email")
@@ -67,19 +66,19 @@ class InstallationForm(forms.Form):
 
 
 class InstallationConfigView:
-    """Единственный шаг установки: форма с адресом и учёткой."""
+    """The only installation step: a form with the URL and the credentials."""
 
-    # Единственная непокрываемая часть модуля: метод существует только в рантайме
-    # Sentry — ему нужны `render_to_response` и настоящий `IntegrationPipeline`,
-    # которых в юнит-прогоне нет. Сам он логики не содержит: вся проверяемая часть
-    # вынесена в `InstallationForm` и `verify_credentials` — они покрыты тестами.
+    # The only part of this module that cannot be covered: the method exists solely inside
+    # the Sentry runtime — it needs `render_to_response` and a real `IntegrationPipeline`,
+    # neither of which exists in the unit test run. It holds no logic of its own: every
+    # testable part lives in `InstallationForm` and `verify_credentials`, which are covered.
     def dispatch(  # pragma: no cover
         self,
         request: HttpRequest,
         pipeline: IntegrationPipeline,
     ) -> HttpResponseBase:
-        # Импорт отложен: форма и verify_credentials должны быть импортируемы без
-        # установленного sentry (их юнит-тесты зависят только от django).
+        # Deferred import: the form and verify_credentials must be importable without
+        # sentry installed (their unit tests depend only on django).
         from sentry.web.helpers import render_to_response
 
         if request.method == "POST":

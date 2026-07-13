@@ -1,1 +1,1 @@
-"""Клиент API Яги (не зависит от Sentry)."""
+"""Jaga API client (does not depend on Sentry)."""

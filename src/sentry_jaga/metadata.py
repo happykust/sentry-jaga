@@ -1,4 +1,4 @@
-"""Метаданные интеграции, отображаемые в каталоге интеграций Sentry."""
+"""Integration metadata shown in Sentry's integration directory."""
 
 from __future__ import annotations
 
@@ -11,19 +11,19 @@ from sentry.integrations.base import (
 REPO_URL = "https://github.com/happykust/sentry-jaga"
 
 DESCRIPTION = """
-Интеграция с Ягой — таск-трекером Ростелекома.
+Integration with Jaga, the issue tracker by Rostelecom.
 
-Позволяет создавать задачи в Яге прямо из Sentry-issue, привязывать
-существующие задачи и автоматически отмечать в задаче, что issue закрыта.
+Create Jaga tasks straight from a Sentry issue, link existing tasks, and have the task
+automatically updated when the issue is resolved.
 """.strip()
 
 FEATURES = [
     FeatureDescription(
-        "Создавайте задачи в Яге из Sentry-issue и привязывайте существующие задачи.",
+        "Create Jaga tasks from a Sentry issue and link existing tasks.",
         IntegrationFeatures.ISSUE_BASIC,
     ),
     FeatureDescription(
-        "Синхронизируйте статус: при закрытии Sentry-issue в задачу Яги добавляется комментарий.",
+        "Sync the status: when a Sentry issue is resolved, a comment is added to the Jaga task.",
         IntegrationFeatures.ISSUE_SYNC,
     ),
 ]
@@ -32,7 +32,7 @@ JAGA_METADATA = IntegrationMetadata(
     description=DESCRIPTION,
     features=FEATURES,
     author="Kirill Nikolaevskiy",
-    noun="Инсталляция",
+    noun="Installation",
     issue_url=f"{REPO_URL}/issues/new",
     source_url=REPO_URL,
     aspects={},

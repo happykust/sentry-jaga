@@ -1,10 +1,11 @@
-"""Логика issue-слоя: сборка форм Sentry и операции над задачами Яги.
+"""Issue-layer logic: building Sentry forms and operating on Jaga tasks.
 
-Модуль framework-agnostic — НЕ импортирует `sentry`. Классы слоя интеграции
-(`issues.py`, `sync.py`) — тонкие делегаты поверх этих функций. Так вся реальная
-логика покрывается юнит-тестами без тестового стека Sentry (Postgres/Kafka/Snuba).
+This module is framework-agnostic — it does NOT import `sentry`. The integration-layer
+classes (`issues.py`, `sync.py`) are thin delegates on top of these functions. That way
+all the real logic is covered by unit tests without Sentry's test stack
+(Postgres/Kafka/Snuba).
 
-Формат field-dict — тот, что понимает фронтенд Sentry (`ExternalIssueForm`):
+The field-dict format is the one Sentry's frontend understands (`ExternalIssueForm`):
 name, label, type (string|textarea|select), default, choices, required,
 multiple, updatesForm, help.
 """
@@ -30,15 +31,16 @@ from sentry_jaga.fields import (
 logger = logging.getLogger("sentry_jaga.issue_config")
 
 SEARCH_LIMIT = 20
-# `updatesForm` заставляет фронтенд Sentry перезапрашивать конфиг на каждое нажатие
-# клавиши. Свой дебаунс поставить некуда — гасим шум минимальной длиной запроса.
+# `updatesForm` makes Sentry's frontend re-fetch the config on every keystroke. There is
+# nowhere to hook up a debounce of our own, so we damp the noise with a minimum query
+# length instead.
 MIN_QUERY_LENGTH = 3
-RESOLVED_COMMENT = "Sentry-issue закрыт. Задача может быть завершена."
-UNRESOLVED_COMMENT = "Sentry-issue переоткрыт: ошибка воспроизвелась снова."
+RESOLVED_COMMENT = "The Sentry issue has been resolved. This task can be completed."
+UNRESOLVED_COMMENT = "The Sentry issue has been reopened: the error happened again."
 
 
 class NoProjectsError(JagaError):
-    """У сервисного аккаунта нет доступных пространств в Яге."""
+    """The service account has no spaces available in Jaga."""
 
 
 def _project_choices(projects: list[Project]) -> list[tuple[str, str]]:
@@ -46,20 +48,20 @@ def _project_choices(projects: list[Project]) -> list[tuple[str, str]]:
 
 
 def _selected_id(params: dict[str, Any], key: str, available: list[int]) -> int:
-    """Выбранный id из `params` — но только если он есть среди доступных.
+    """The id selected in `params` — but only if it is among the available ones.
 
-    При `updatesForm` фронтенд Sentry пересылает ВСЕ поля формы, а не только
-    изменённое. После смены пространства в `params` остаётся `issue_type` от
-    прежнего: взять его как есть — значит получить 404 от Яги или, что хуже,
-    тихо создать задачу типа из чужого пространства. Поэтому значение
-    валидируется по актуальному списку, а на промахе берётся первый доступный.
+    With `updatesForm`, Sentry's frontend resends EVERY form field, not just the one that
+    changed. After the space is switched, `params` still carries the `issue_type` of the
+    previous one: taking it at face value means a 404 from Jaga or, worse, silently
+    creating a task whose type belongs to another space. So the value is validated against
+    the current list, and on a miss we fall back to the first available one.
 
-    `available` не пуст: вызывающий код это гарантирует.
+    `available` is never empty: the caller guarantees that.
     """
     raw: Any = params.get(key)
     try:
         candidate = int(raw)
-    except (TypeError, ValueError):  # ключа нет (None), пусто или не число
+    except (TypeError, ValueError):  # key absent (None), empty, or not a number
         return available[0]
     return candidate if candidate in available else available[0]
 
@@ -67,20 +69,20 @@ def _selected_id(params: dict[str, Any], key: str, available: list[int]) -> int:
 def _require_projects(client: JagaClient) -> list[Project]:
     projects = client.get_projects()
     if not projects:
-        raise NoProjectsError("В Яге нет доступных пространств для сервисного аккаунта.")
+        raise NoProjectsError("This service account has no spaces available in Jaga.")
     return projects
 
 
 def _warn_if_no_system_attributes(
     attributes: list[Attribute], project_id: int, type_id: int
 ) -> None:
-    """Предупредить, если у типа задачи не опознан ни один системный атрибут.
+    """Warn if not a single system attribute was recognised on the task type.
 
-    Мнемокоды `task.title` / `task.content_data` выведены из закономерности
-    `task.<колонка_snake_case>` (в спеке Яги подтверждены только `task.mcode`,
-    `task.creator_id`, `task.project_id`), но самими доками не подтверждены. Если мы
-    промахнулись, форма молча соберётся без названия и описания — а Sentry-контекст
-    в задачу не попадёт. Пусть промах хотя бы виден в логах.
+    The mnemonic codes `task.title` / `task.content_data` were inferred from the pattern
+    `task.<snake_case_column>` (the Jaga spec only confirms `task.mcode`, `task.creator_id`
+    and `task.project_id`) and are not confirmed by the docs themselves. If we guessed
+    wrong, the form will quietly come out without a title and a description — and the
+    Sentry context will never reach the task. Let the miss at least be visible in the logs.
     """
     if find_attribute(attributes, TITLE_OBJECT_TYPE) or find_attribute(
         attributes, DESCRIPTION_OBJECT_TYPE
@@ -100,7 +102,7 @@ def _warn_if_no_system_attributes(
 def _project_field(projects: list[Project], project_id: int) -> dict[str, Any]:
     return {
         "name": "project",
-        "label": "Пространство",
+        "label": "Space",
         "type": "select",
         "choices": _project_choices(projects),
         "default": str(project_id),
@@ -112,7 +114,7 @@ def _project_field(projects: list[Project], project_id: int) -> dict[str, Any]:
 def build_create_config(
     client: JagaClient, params: dict[str, Any], title: str, description: str
 ) -> list[dict[str, Any]]:
-    """Каскад формы создания: пространство → тип задачи → динамические атрибуты."""
+    """The create-form cascade: space -> task type -> dynamic attributes."""
     projects = _require_projects(client)
     project_id = _selected_id(params, "project", [p.id for p in projects])
     fields: list[dict[str, Any]] = [_project_field(projects, project_id)]
@@ -121,12 +123,12 @@ def build_create_config(
     if not task_types:
         return fields
 
-    # Типы валидируются по списку ТЕКУЩЕГО пространства: см. `_selected_id`.
+    # Types are validated against the list of the CURRENT space: see `_selected_id`.
     type_id = _selected_id(params, "issue_type", [t.id for t in task_types])
     fields.append(
         {
             "name": "issue_type",
-            "label": "Тип задачи",
+            "label": "Task type",
             "type": "select",
             "choices": [(str(t.id), t.name) for t in task_types],
             "default": str(type_id),
@@ -147,22 +149,22 @@ def build_create_config(
 
 
 def create_task_from_form(client: JagaClient, form_data: dict[str, Any]) -> dict[str, Any]:
-    """Создать задачу Яги по данным формы Sentry."""
+    """Create a Jaga task from the data submitted in a Sentry form."""
     project_id = int(form_data["project"])
     type_id = int(form_data["issue_type"])
 
     attributes = client.get_task_type_attributes(project_id, type_id)
     payload = form_data_to_attributes(form_data, attributes)
     if not payload:
-        raise JagaError("Не заполнено ни одного атрибута задачи.")
+        raise JagaError("Not a single task attribute was filled in.")
 
     task = client.create_task(project_id, type_id, payload)
 
     title_attr = find_attribute(attributes, TITLE_OBJECT_TYPE)
     title = str(form_data.get(field_name(title_attr), "")) if title_attr else task.code
-    # `metadata` уезжает в `ExternalIssue`. Без `task_id` каждый resolve заново
-    # искал бы задачу по коду (`GET /v1/task/findExtendedWithFlexField/code/{code}`) —
-    # хотя id только что вернула сама Яга. Ср. `get_task_summary`.
+    # `metadata` travels into `ExternalIssue`. Without `task_id`, every resolve would look
+    # the task up by code again (`GET /v1/task/findExtendedWithFlexField/code/{code}`) —
+    # even though Jaga has just returned the id itself. Cf. `get_task_summary`.
     return {
         "key": task.code,
         "title": title,
@@ -172,16 +174,17 @@ def create_task_from_form(client: JagaClient, form_data: dict[str, Any]) -> dict
 
 
 def build_link_config(client: JagaClient, params: dict[str, Any]) -> list[dict[str, Any]]:
-    """Поля формы линковки: пространство, строка поиска, выбор задачи.
+    """Fields of the link form: space, search query, task picker.
 
-    Живого autocomplete нет — внешний пакет не может зарегистрировать search-endpoint
-    в urlconf Sentry. Поэтому поиск идёт через `updatesForm`: пользователь вводит
-    запрос, форма перезапрашивается, список задач наполняется.
+    There is no live autocomplete — an external package cannot register a search endpoint
+    in Sentry's urlconf. So the search runs through `updatesForm`: the user types a query,
+    the form is re-fetched, and the task list fills up.
 
-    Обратная сторона `updatesForm` — фронтенд Sentry перезапрашивает конфиг на каждое
-    нажатие клавиши, дебаунса там нет, а поставить свой JS внешний пакет не может.
-    Смягчаем на сервере: не ищем короче `MIN_QUERY_LENGTH` символов, а список
-    пространств отдаётся из кэша клиента (см. `JagaClient.get_projects`).
+    The flip side of `updatesForm` is that Sentry's frontend re-fetches the config on every
+    keystroke, there is no debounce there, and an external package cannot ship its own JS.
+    We soften it on the server: we do not search for queries shorter than
+    `MIN_QUERY_LENGTH`, and the list of spaces is served from the client's cache (see
+    `JagaClient.get_projects`).
     """
     projects = _require_projects(client)
     project_id = _selected_id(params, "project", [p.id for p in projects])
@@ -198,29 +201,29 @@ def build_link_config(client: JagaClient, params: dict[str, Any]) -> list[dict[s
         _project_field(projects, project_id),
         {
             "name": "query",
-            "label": "Поиск задачи",
+            "label": "Task search",
             "type": "string",
             "default": query,
             "required": False,
             "updatesForm": True,
             "help": (
-                f"Введите код или часть названия задачи — поиск начинается "
-                f"с {MIN_QUERY_LENGTH} символов."
+                f"Enter a task code or part of a task title — the search starts "
+                f"at {MIN_QUERY_LENGTH} characters."
             ),
         },
         {
             "name": "externalIssue",
-            "label": "Задача",
+            "label": "Task",
             "type": "select",
             "choices": choices,
             "required": True,
-            "help": "Если список пуст — уточните поисковый запрос выше.",
+            "help": "If the list is empty, refine the search query above.",
         },
     ]
 
 
 def get_task_summary(client: JagaClient, code: str) -> dict[str, Any]:
-    """Сводка по задаче Яги для `ExternalIssue` Sentry."""
+    """Summary of a Jaga task for Sentry's `ExternalIssue`."""
     raw = client.get_task_by_code(code)
     return {
         "key": raw["code"],
@@ -246,7 +249,7 @@ def status_comment(is_resolved: bool) -> str:
 
 
 def resolve_task_id(client: JagaClient, code: str, metadata: dict[str, Any] | None) -> int:
-    """ID задачи: из метаданных `ExternalIssue`, иначе — поиск по коду."""
+    """Task id: from the `ExternalIssue` metadata, otherwise looked up by code."""
     task_id = (metadata or {}).get("task_id")
     if task_id:
         return int(task_id)

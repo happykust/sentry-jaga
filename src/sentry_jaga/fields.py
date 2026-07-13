@@ -1,11 +1,11 @@
-"""Маппинг EAV-атрибутов Яги в поля формы Sentry и обратно.
+"""Mapping of Jaga EAV attributes to Sentry form fields and back.
 
-Sentry рендерит формы create/link по списку field-dict, который возвращает
-интеграция. Поддерживаемые ключи: name, label, type (string/textarea/select),
-default, choices, required, multiple, updatesForm, help.
+Sentry renders the create/link forms from a list of field dicts returned by the
+integration. Supported keys: name, label, type (string/textarea/select), default,
+choices, required, multiple, updatesForm, help.
 
-Яга описывает поля задачи атрибутами (EAV). Системные атрибуты опознаются
-по мнемокоду `objectTypeNameM` (например, `task.title`).
+Jaga describes the fields of a task with attributes (EAV). System attributes are
+recognised by their mnemonic code `objectTypeNameM` (for example, `task.title`).
 """
 
 from __future__ import annotations
@@ -21,12 +21,12 @@ FIELD_PREFIX = "attr_"
 
 
 def field_name(attr: Attribute) -> str:
-    """Имя поля формы Sentry для атрибута Яги."""
+    """Name of the Sentry form field for a Jaga attribute."""
     return f"{FIELD_PREFIX}{attr.id}"
 
 
 def find_attribute(attributes: list[Attribute], object_type: str) -> Attribute | None:
-    """Найти атрибут по мнемокоду системного типа."""
+    """Find an attribute by the mnemonic code of its system type."""
     for attr in attributes:
         if attr.object_type_name_m == object_type:
             return attr
@@ -38,7 +38,7 @@ def attribute_to_field(
     choices: list[tuple[str, str]] | None = None,
     default: Any = None,
 ) -> dict[str, Any]:
-    """Превратить определение атрибута Яги в field-dict Sentry."""
+    """Turn a Jaga attribute definition into a Sentry field dict."""
     field: dict[str, Any] = {
         "name": field_name(attr),
         "label": attr.name,
@@ -68,9 +68,9 @@ def build_attribute_fields(
     title: str,
     description: str,
 ) -> list[dict[str, Any]]:
-    """Собрать поля формы для всех видимых атрибутов типа задачи.
+    """Build the form fields for every visible attribute of a task type.
 
-    Системные атрибуты «название» и «описание» предзаполняются данными Sentry.
+    The system attributes "title" and "description" are pre-filled with Sentry data.
     """
     fields: list[dict[str, Any]] = []
     for attr in sorted(attributes, key=lambda a: a.order_num):
@@ -93,7 +93,7 @@ def build_attribute_fields(
 def form_data_to_attributes(
     form_data: dict[str, Any], attributes: list[Attribute]
 ) -> list[dict[str, Any]]:
-    """Собрать `attributes` для создания задачи из данных формы Sentry."""
+    """Build the `attributes` payload for task creation from Sentry form data."""
     payload: list[dict[str, Any]] = []
     for attr in attributes:
         value = form_data.get(field_name(attr))
@@ -112,7 +112,7 @@ def form_data_to_attributes(
 
 
 def extract_title(raw_task: dict[str, Any]) -> str:
-    """Достать название задачи из ответа Яги; фолбэк — код задачи."""
+    """Pull the task title out of a Jaga response; fall back to the task code."""
     for raw in raw_task.get("attributes", []):
         if raw.get("objectTypeNameM") == TITLE_OBJECT_TYPE:
             value = raw.get("value")

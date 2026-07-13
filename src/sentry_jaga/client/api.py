@@ -1,4 +1,4 @@
-"""HTTP-клиент API Яги."""
+"""HTTP client for the Jaga API."""
 
 from __future__ import annotations
 
@@ -16,14 +16,14 @@ API_PREFIX = "/external-api"
 STATUS_MODIFIER_TODO = 1
 DEFAULT_TIMEOUT = 30
 DEFAULT_PAGE_SIZE = 100
-# Список пространств меняется редко, а форма линковки перезапрашивает его на каждое
-# нажатие клавиши (`updatesForm` без дебаунса). Короткий TTL гасит шквал, не рискуя
-# надолго показать устаревший список.
+# The list of spaces rarely changes, yet the link form re-fetches it on every keystroke
+# (`updatesForm`, with no debounce). A short TTL absorbs the burst without risking a
+# stale list for long.
 PROJECTS_CACHE_TTL = 60
 
 
 class JagaClient:
-    """Клиент внешнего API Яги. Не зависит от Sentry."""
+    """Client for the external Jaga API. Does not depend on Sentry."""
 
     def __init__(
         self,
@@ -52,7 +52,7 @@ class JagaClient:
 
     @staticmethod
     def _cache_prefix(instance_url: str, email: str) -> str:
-        """Общий префикс ключей кэша для пары «инсталляция + сервисный аккаунт»."""
+        """Shared cache key prefix for one instance + service account pair."""
         digest = hashlib.sha256(f"{instance_url}|{email}".encode()).hexdigest()[:32]
         return f"sentry-jaga:{digest}"
 
@@ -75,10 +75,11 @@ class JagaClient:
         raise error_from_response(response.status_code, body)
 
     def _authed(self, method: str, path: str, **kwargs: Any) -> Any:
-        """Запрос с Bearer-токеном; при 401 один раз перелогинивается.
+        """Send a request with a Bearer token; on a 401, re-login exactly once.
 
-        Только 401: 403 у Яги означает «токен валиден, но прав на объект нет» —
-        релогин его не исправит, лишь добавит запрос и замаскирует настоящую причину.
+        Only on a 401: in Jaga a 403 means "the token is valid, but you have no rights to
+        this object" — re-logging in will not fix that, it will only add a request and
+        mask the real cause.
         """
         headers = dict(kwargs.pop("headers", {}))
         headers["Authorization"] = f"Bearer {self._tokens.get_access_token()}"
@@ -91,7 +92,7 @@ class JagaClient:
             headers["Authorization"] = f"Bearer {self._tokens.get_access_token()}"
             return self._send(method, path, headers=headers, **kwargs)
 
-    # --- аутентификация -------------------------------------------------
+    # --- authentication -------------------------------------------------
 
     def login(self) -> Token:
         payload = self._send(
@@ -103,13 +104,13 @@ class JagaClient:
         payload = self._send("POST", "/v1/auth/refresh", json={"refreshToken": refresh_token})
         return Token.from_api(payload)
 
-    # --- справочники ----------------------------------------------------
+    # --- reference data -------------------------------------------------
 
     def get_projects(self) -> list[Project]:
-        """Все доступные пространства (со всех страниц), с коротким кэшем.
+        """Every available space (across all pages), with a short-lived cache.
 
-        Кэш общий с токеном (в проде — Django cache Sentry), поэтому переживает
-        отдельный HTTP-запрос: форма линковки дёргает список на каждое нажатие клавиши.
+        The cache is shared with the token (in production, Sentry's Django cache), so it
+        outlives a single HTTP request: the link form fetches this list on every keystroke.
         """
         cached = self._cache.get(self._projects_cache_key)
         if cached is not None:
@@ -120,7 +121,7 @@ class JagaClient:
         return [Project.from_api(item) for item in content]
 
     def _fetch_all_projects(self) -> list[dict[str, Any]]:
-        """Дочитать все страницы `/v1/project/list/my` — 101-е пространство тоже видимо."""
+        """Read every page of `/v1/project/list/my` — the 101st space must be visible too."""
         items: list[dict[str, Any]] = []
         page = 0
         while True:
@@ -150,7 +151,7 @@ class JagaClient:
         items = sorted(payload.get("items", []), key=lambda item: item.get("orderNum", 0))
         return [(str(item["id"]), item["value"]) for item in items]
 
-    # --- задачи ---------------------------------------------------------
+    # --- tasks ----------------------------------------------------------
 
     def create_task(
         self, project_id: int, task_type_id: int, attributes: list[dict[str, Any]]

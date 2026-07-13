@@ -1,4 +1,4 @@
-"""Лёгкие модели поверх DTO Яги."""
+"""Lightweight models on top of Jaga DTOs."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from typing import Any
 
 
 def _parse_dt(raw: str) -> datetime:
-    """Разобрать ISO-8601 из Яги (в т.ч. с суффиксом Z)."""
+    """Parse an ISO-8601 timestamp from Jaga (including the `Z` suffix form)."""
     value = datetime.fromisoformat(raw.replace("Z", "+00:00"))
     return value if value.tzinfo else value.replace(tzinfo=UTC)
 
@@ -49,6 +49,8 @@ class Token:
 
 @dataclass(frozen=True, slots=True)
 class Project:
+    """A Jaga space. The Jaga API calls it a "project"; its UI calls it a space."""
+
     id: int
     title: str
     code: str
