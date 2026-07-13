@@ -39,6 +39,22 @@ jobs:
           name: coverage
           path: coverage.xml
 
+  typecheck-sentry:
+    name: Типы против API Sentry
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --locked
+      - name: Получить исходники Sentry 26.3.1 (только код, без установки)
+        run: git clone --depth 1 --branch 26.3.1 https://github.com/getsentry/sentry.git .sentry-src
+      - name: Проверить слой Sentry против реального API
+        env:
+          MYPYPATH: .sentry-src/src
+        run: uv run mypy --follow-imports=silent
+
   integration:
     name: Тесты слоя Sentry (non-blocking)
     runs-on: ubuntu-latest

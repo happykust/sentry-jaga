@@ -66,6 +66,24 @@ uv run ruff check . && uv run ruff format --check . && uv run mypy
 
 CI прогонит линт, типы и тесты на каждый PR.
 
+## Проверка типов против API Sentry
+
+`uv run mypy` по умолчанию не видит `sentry` (пакета нет в PyPI), поэтому все его
+типы деградируют в `Any` — опечатка в имени метода Sentry так не поймается.
+
+Чтобы проверить слой интеграции против **настоящего** API Sentry 26.3.1, дайте mypy
+исходники Sentry (устанавливать его не нужно — только код):
+
+```bash
+git clone --depth 1 --branch 26.3.1 https://github.com/getsentry/sentry.git .sentry-src
+MYPYPATH=.sentry-src/src uv run mypy --follow-imports=silent
+```
+
+Ровно это делает блокирующая CI-джоба «Типы против API Sentry». Она — основная
+гарантия корректности модулей `integration.py`, `issues.py`, `sync.py`, `pipeline.py`,
+`metadata.py`: их нельзя покрыть тестами, потому что тестовый стек Sentry
+(Postgres/Redis/Kafka/Snuba) в CI плагина недостижим.
+
 ## Релиз
 
 См. [docs/release.md](docs/release.md).

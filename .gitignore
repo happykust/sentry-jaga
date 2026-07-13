@@ -329,3 +329,9 @@ cython_debug/
 ### Project
 # Служебный скретч SDD-агентов
 .superpowers/
+
+# Исходники Sentry для проверки типов (клонируются локально/в CI)
+.sentry-src/
+
+# Служебные worktree субагентов
+.claude/

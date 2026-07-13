@@ -71,7 +71,14 @@ mypy_path = "src"
 [[tool.mypy.overrides]]
 module = ["sentry.*", "django.*"]
 ignore_missing_imports = true
-follow_imports = "skip"
+follow_imports = "silent"
+
+# Базовые классы Sentry/Django резолвятся в Any (пакеты не установлены),
+# а strict запрещает наследование от Any. Разрешаем — иначе каждый класс
+# слоя интеграции обрастает `# type: ignore[misc]`.
+[[tool.mypy.overrides]]
+module = ["sentry_jaga.*"]
+disallow_subclassing_any = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
