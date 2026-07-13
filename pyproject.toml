@@ -84,6 +84,15 @@ follow_imports = "silent"
 module = ["sentry_jaga.*"]
 disallow_subclassing_any = false
 
+# Код проверяется в двух конфигурациях: без исходников Sentry (sentry.* → Any) и
+# против них (MYPYPATH, CI-джоба «Типы против API Sentry»). Часть методов Sentry не
+# аннотирована — вызов требует `# type: ignore[no-untyped-call]`, который во втором
+# прогоне нужен, а в первом считается неиспользованным. Гасим предупреждение только
+# для модулей, вызывающих нетипизированные методы Sentry.
+[[tool.mypy.overrides]]
+module = ["sentry_jaga.issues"]
+warn_unused_ignores = false
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra --strict-markers"
