@@ -1,3 +1,4 @@
+import json
 from typing import Any
 
 import pytest
@@ -34,6 +35,29 @@ def test_login_returns_token(client: JagaClient) -> None:
     token = client.login()
     assert token.access_token == "at1"
     assert responses.calls[0].request.body is not None
+
+
+@responses.activate
+def test_refresh_sends_refresh_token_and_returns_new_token(client: JagaClient) -> None:
+    """Обновление токена уходит на /v1/auth/refresh с телом {"refreshToken": ...}."""
+    responses.add(
+        responses.POST,
+        f"{API}/v1/auth/refresh",
+        json={
+            "accessToken": "at2",
+            "refreshToken": "rt2",
+            "expiresAt": "2099-06-01T12:00:00Z",
+            "id": 1,
+            "email": "bot@example.com",
+            "fullName": "Bot",
+        },
+        status=200,
+    )
+    token = client.refresh("rt1")
+
+    assert (token.access_token, token.refresh_token) == ("at2", "rt2")
+    assert token.expires_at.isoformat() == "2099-06-01T12:00:00+00:00"
+    assert json.loads(responses.calls[-1].request.body) == {"refreshToken": "rt1"}
 
 
 @responses.activate
@@ -177,6 +201,32 @@ def test_create_task_posts_payload_and_returns_ref(client: JagaClient) -> None:
 
 
 @responses.activate
+def test_get_task_by_code_returns_task(client: JagaClient) -> None:
+    _mock_login()
+    responses.add(
+        responses.GET,
+        f"{API}/v1/task/findExtendedWithFlexField/code/PLT-500",
+        json={
+            "id": 500,
+            "code": "PLT-500",
+            "statusId": 3,
+            "statusModifierId": 2,
+            "taskTypeId": 10,
+            "attributes": [{"fieldId": 100, "value": "Падает логин", "referenceValue": False}],
+        },
+        status=200,
+    )
+    task = client.get_task_by_code("PLT-500")
+
+    assert task["id"] == 500
+    assert task["code"] == "PLT-500"
+    assert task["statusId"] == 3
+    assert task["attributes"] == [
+        {"fieldId": 100, "value": "Падает логин", "referenceValue": False}
+    ]
+
+
+@responses.activate
 def test_search_tasks(client: JagaClient) -> None:
     _mock_login()
     responses.add(
@@ -263,3 +313,40 @@ def test_raises_server_error(client: JagaClient) -> None:
     responses.add(responses.GET, f"{API}/v1/project/list/my", json={}, status=500)
     with pytest.raises(JagaServerError):
         client.get_projects()
+
+
+# --- разбор тела ответа ---------------------------------------------------
+# Яга не на всех эндпоинтах отвечает JSON-ом: бывает пустое тело (204 на комментарии)
+# и текст от прокси перед Ягой. Проверяем это на `_send` — только он и возвращает
+# разобранное тело как есть, публичные методы его уже интерпретируют.
+
+
+@responses.activate
+def test_send_returns_none_on_empty_ok_body(client: JagaClient) -> None:
+    responses.add(responses.POST, f"{API}/v1/comment", body="", status=204)
+    assert client._send("POST", "/v1/comment") is None
+
+
+@responses.activate
+def test_send_returns_text_on_non_json_ok_body(client: JagaClient) -> None:
+    responses.add(
+        responses.POST, f"{API}/v1/comment", body="OK", status=200, content_type="text/plain"
+    )
+    assert client._send("POST", "/v1/comment") == "OK"
+
+
+@responses.activate
+def test_send_raises_with_text_body_on_non_json_error(client: JagaClient) -> None:
+    """Прокси может ответить HTML-ошибкой: исключение всё равно поднимается, в body — текст."""
+    responses.add(
+        responses.GET,
+        f"{API}/v1/project/list/my",
+        body="<html>502 Bad Gateway</html>",
+        status=502,
+        content_type="text/html",
+    )
+    with pytest.raises(JagaServerError) as exc_info:
+        client._send("GET", "/v1/project/list/my")
+
+    assert exc_info.value.status_code == 502
+    assert exc_info.value.body == "<html>502 Bad Gateway</html>"

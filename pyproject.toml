@@ -101,6 +101,24 @@ markers = ["sentry: тесты, требующие установленного 
 [tool.coverage.run]
 source = ["src/sentry_jaga"]
 branch = true
+# Слой Sentry непокрываем по конструкции, и держать его в знаменателе — значит
+# показывать заведомо ложную цифру. Эти модули импортируют `sentry`: пакета нет на
+# PyPI, из исходников он ставится тяжело, а его тестовый стек требует поднятого
+# Postgres/Redis/Kafka/Snuba — в юнит-прогоне такого окружения нет и не будет
+# (tests/integration/ поэтому скипаются через `pytest.importorskip("sentry")`).
+# Вместо тестов их корректность держит mypy против настоящих исходников Sentry —
+# отдельная блокирующая CI-джоба. Так что метрика измеряет то, что реально можно
+# покрыть: ядро (client/, fields.py, descriptions.py, issue_config.py).
+omit = [
+    "src/sentry_jaga/apps.py",
+    "src/sentry_jaga/metadata.py",
+    "src/sentry_jaga/pipeline.py",
+    "src/sentry_jaga/integration.py",
+    "src/sentry_jaga/issues.py",
+    "src/sentry_jaga/sync.py",
+]
 
 [tool.coverage.report]
 exclude_lines = ["pragma: no cover", "if TYPE_CHECKING:", "raise NotImplementedError"]
+# Ядро — вся логика проекта и единственная тестируемая зона: планка высокая.
+fail_under = 95
