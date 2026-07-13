@@ -1,3 +1,4 @@
+import logging
 from typing import Any
 
 import pytest
@@ -5,6 +6,7 @@ import pytest
 from sentry_jaga.client.exceptions import JagaError
 from sentry_jaga.client.models import Attribute, Project, TaskRef, TaskType
 from sentry_jaga.issue_config import (
+    MIN_QUERY_LENGTH,
     NoProjectsError,
     build_create_config,
     build_link_config,
@@ -30,20 +32,27 @@ class FakeClient:
         projects: list[Project] | None = None,
         task_types: list[TaskType] | None = None,
         attributes: list[Attribute] | None = None,
+        task_types_by_project: dict[int, list[TaskType]] | None = None,
     ) -> None:
         self._projects = projects if projects is not None else [Project(1, "Платформа", "PLT")]
         self._task_types = task_types if task_types is not None else [TaskType(10, "Баг")]
+        self._task_types_by_project = task_types_by_project
         self._attributes = attributes if attributes is not None else [TITLE, DESCRIPTION, PRIORITY]
         self.created: dict[str, Any] | None = None
         self.comments: list[tuple[int, str]] = []
+        self.searches: list[tuple[int, str]] = []
+        self.attributes_requested: list[tuple[int, int]] = []
 
     def get_projects(self) -> list[Project]:
         return self._projects
 
     def get_task_types(self, project_id: int) -> list[TaskType]:
+        if self._task_types_by_project is not None:
+            return self._task_types_by_project.get(project_id, [])
         return self._task_types
 
     def get_task_type_attributes(self, project_id: int, task_type_id: int) -> list[Attribute]:
+        self.attributes_requested.append((project_id, task_type_id))
         return self._attributes
 
     def get_dictionary_values(self, dictionary_id: int) -> list[tuple[str, str]]:
@@ -69,6 +78,7 @@ class FakeClient:
         }
 
     def search_tasks(self, project_id: int, text: str, *, size: int = 20) -> list[TaskRef]:
+        self.searches.append((project_id, text))
         return [TaskRef(id=5, code="PLT-5", title="Падает логин")]
 
     def create_comment(self, task_id: int, content: str) -> None:
@@ -102,6 +112,52 @@ def test_create_config_honours_selected_params() -> None:
 
     assert by_name["project"]["default"] == "2"
     assert by_name["issue_type"]["default"] == "11"
+
+
+def test_create_config_drops_task_type_left_over_from_previous_project() -> None:
+    """Смена пространства при «залипшем» issue_type от прежнего.
+
+    Sentry при `updatesForm` пересылает ВСЕ поля формы, а не только изменённое: после
+    переключения `project` в `params` приезжает `issue_type` СТАРОГО пространства.
+    Принять его как есть — 404 от Яги либо, что хуже, тихо созданная задача чужого типа.
+    Ожидаем откат на первый тип нового пространства.
+    """
+    client = FakeClient(
+        projects=[Project(1, "Платформа", "PLT"), Project(2, "Биллинг", "BIL")],
+        task_types_by_project={
+            1: [TaskType(10, "Баг"), TaskType(11, "Задача")],
+            2: [TaskType(20, "Инцидент"), TaskType(21, "Запрос")],
+        },
+    )
+
+    # Пользователь переключил пространство на 2, а issue_type=10 остался от пространства 1.
+    fields = build_create_config(client, {"project": "2", "issue_type": "10"}, "t", "d")
+    by_name = _by_name(fields)
+
+    assert by_name["issue_type"]["default"] == "20"
+    assert by_name["issue_type"]["choices"] == [("20", "Инцидент"), ("21", "Запрос")]
+    # И атрибуты запрошены для типа НОВОГО пространства, а не для чужого.
+    assert client.attributes_requested == [(2, 20)]
+
+
+def test_create_config_falls_back_when_project_is_unknown() -> None:
+    """Пространство из params, которого больше нет в списке, не должно протекать дальше."""
+    client = FakeClient(projects=[Project(1, "Платформа", "PLT"), Project(2, "Биллинг", "BIL")])
+    by_name = _by_name(build_create_config(client, {"project": "999"}, "t", "d"))
+
+    assert by_name["project"]["default"] == "1"
+    assert client.attributes_requested == [(1, 10)]
+
+
+@pytest.mark.parametrize(
+    "junk", ["", "  ", "не-число", None], ids=["empty", "blank", "text", "none"]
+)
+def test_create_config_ignores_unusable_project_param(junk: str | None) -> None:
+    """Пустое/нечисловое значение из формы не должно ронять каскад."""
+    client = FakeClient(projects=[Project(1, "Платформа", "PLT"), Project(2, "Биллинг", "BIL")])
+    by_name = _by_name(build_create_config(client, {"project": junk}, "t", "d"))
+
+    assert by_name["project"]["default"] == "1"
 
 
 def test_create_config_without_projects_raises() -> None:
@@ -140,6 +196,46 @@ def test_create_task_from_form_rejects_empty_form() -> None:
         create_task_from_form(FakeClient(), {"project": "1", "issue_type": "10"})
 
 
+def test_create_task_from_form_returns_task_id_in_metadata() -> None:
+    """`metadata` уезжает в `ExternalIssue`. Без `task_id` каждый resolve заново искал бы
+    задачу по коду — хотя id только что вернула сама Яга."""
+    result = create_task_from_form(
+        FakeClient(), {"project": "1", "issue_type": "10", "attr_100": "Падает логин"}
+    )
+
+    assert result["metadata"] == {"task_id": 500}
+
+
+def test_created_task_needs_no_lookup_to_resolve_its_id() -> None:
+    """Сквозная проверка смысла I4: id созданной задачи разрешается без похода в Ягу."""
+    client = FakeClient()
+    created = create_task_from_form(
+        client, {"project": "1", "issue_type": "10", "attr_100": "Падает логин"}
+    )
+
+    assert resolve_task_id(client, created["key"], created["metadata"]) == 500
+
+
+def test_warns_when_no_system_attribute_recognised(caplog: pytest.LogCaptureFixture) -> None:
+    """Мнемокоды task.title/task.content_data спекой Яги не подтверждены. Если ни один
+    системный атрибут не опознан — промах не должен деградировать молча."""
+    exotic = Attribute(id=200, name="Тема", object_type_name_m="task.subject_line")
+
+    with caplog.at_level(logging.WARNING, logger="sentry_jaga.issue_config"):
+        build_create_config(FakeClient(attributes=[exotic]), {}, "t", "d")
+
+    assert "system_attributes_not_found" in caplog.text
+
+
+def test_does_not_warn_when_system_attributes_are_present(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level(logging.WARNING, logger="sentry_jaga.issue_config"):
+        build_create_config(FakeClient(), {}, "t", "d")
+
+    assert caplog.records == []
+
+
 def test_link_config_searches_when_query_given() -> None:
     fields = build_link_config(FakeClient(), {"project": "1", "query": "логин"})
     by_name = _by_name(fields)
@@ -151,6 +247,40 @@ def test_link_config_searches_when_query_given() -> None:
 def test_link_config_without_query_has_no_choices() -> None:
     by_name = _by_name(build_link_config(FakeClient(), {"project": "1"}))
     assert by_name["externalIssue"]["choices"] == []
+
+
+def test_link_config_does_not_search_below_min_query_length() -> None:
+    """`updatesForm` перезапрашивает конфиг на КАЖДОЕ нажатие клавиши, дебаунса у Sentry
+    нет, свой JS внешний пакет поставить не может. Минимальная длина запроса — единственный
+    серверный тормоз: короче `MIN_QUERY_LENGTH` в Ягу не ходим вообще."""
+    client = FakeClient()
+    short = "л" * (MIN_QUERY_LENGTH - 1)
+
+    by_name = _by_name(build_link_config(client, {"project": "1", "query": short}))
+
+    assert client.searches == []
+    assert by_name["externalIssue"]["choices"] == []
+
+
+def test_link_config_searches_from_min_query_length() -> None:
+    client = FakeClient()
+    enough = "л" * MIN_QUERY_LENGTH
+
+    by_name = _by_name(build_link_config(client, {"project": "1", "query": enough}))
+
+    assert client.searches == [(1, enough)]
+    assert by_name["externalIssue"]["choices"] == [("PLT-5", "PLT-5 — Падает логин")]
+
+
+def test_link_config_ignores_whitespace_only_query() -> None:
+    client = FakeClient()
+    build_link_config(client, {"project": "1", "query": "   "})
+    assert client.searches == []
+
+
+def test_link_config_help_states_the_minimum_query_length() -> None:
+    by_name = _by_name(build_link_config(FakeClient(), {"project": "1"}))
+    assert str(MIN_QUERY_LENGTH) in by_name["query"]["help"]
 
 
 def test_get_task_summary() -> None:
