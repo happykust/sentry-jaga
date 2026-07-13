@@ -64,13 +64,13 @@ Organization Settings → Integrations → **Яга** → Install. В форме
 (`POST /v1/auth/login`), обновление токена по истечении (`POST /v1/auth/refresh`),
 токен кэшируется в Django-кэше Sentry.
 
-- **Создание.** Форма собирается каскадом: пространства (`GET /v1/project/search/my`)
-  → типы задач (`GET /v1/project/{projectId}/taskType`) → атрибуты выбранного типа
-  (`GET /v1/project/{projectId}/taskType/{taskTypeId}`), из которых рендерятся поля
-  формы. Submit создаёт задачу через
+- **Создание.** Форма собирается каскадом: пространства (`GET /v1/project/list/my`,
+  список кэшируется на 60 секунд) → типы задач (`GET /v1/project/{projectId}/taskType`)
+  → атрибуты выбранного типа (`GET /v1/project/{projectId}/taskType/{taskTypeId}`),
+  из которых рендерятся поля формы. Submit создаёт задачу через
   `POST /v1/task/createByTaskType/{projectId}/{taskTypeId}`.
-- **Привязка.** Поиск задачи по названию или коду (`GET /v1/task/searchByTitleCode`),
-  затем задача разрешается по коду
+- **Привязка.** Поиск задачи по названию или коду (`GET /v1/task/searchByTitleCode`,
+  начиная с 3 символов запроса), затем задача разрешается по коду
   (`GET /v1/task/findExtendedWithFlexField/code/{taskCode}`).
 - **Синхронизация статуса.** При закрытии или переоткрытии Sentry-issue в связанную
   задачу отправляется комментарий (`POST /v1/comment`).
