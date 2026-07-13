@@ -48,7 +48,22 @@ REAL_ATTRIBUTES = [SPACE, TYPE, TITLE, DESCRIPTION, ASSIGNEE, LABEL, PRIORITY, C
 
 
 def test_field_name_is_stable() -> None:
-    assert field_name(TITLE) == "attr_100"
+    """An ordinary attribute is named after its Jaga id — nothing outside this package could
+    know what else to call it."""
+    assert field_name(SEVERITY) == "attr_110"
+    assert field_name(ASSIGNEE) == "attr_103"
+
+
+def test_title_and_description_use_sentrys_canonical_field_names() -> None:
+    """The two fields Sentry itself names must not hide behind an `attr_<id>` name.
+
+    The alert-rule ticket action overwrites `data["title"]` / `data["description"]` with the
+    title and body of the event that fired the rule, and its modal hides the fields by those
+    exact names. Named `attr_100`, the title would never reach us, and every task filed by a
+    rule would carry the empty default saved into the rule config. See CANONICAL_FIELD_NAMES.
+    """
+    assert field_name(TITLE) == "title"
+    assert field_name(DESCRIPTION) == "description"
 
 
 def test_find_attribute() -> None:
@@ -106,8 +121,8 @@ def test_build_attribute_fields_renders_the_supported_attributes() -> None:
     )
     by_name = {f["name"]: f for f in fields}
 
-    assert by_name["attr_100"]["default"] == "Login is broken"
-    assert by_name["attr_101"]["default"] == "Sentry issue: https://..."
+    assert by_name["title"]["default"] == "Login is broken"
+    assert by_name["description"]["default"] == "Sentry issue: https://..."
     assert by_name["attr_103"]["choices"] == [("uuid-1", "Ivanov")]
     assert by_name["attr_104"]["choices"] == [("7", "backend")]
     assert by_name["attr_110"]["choices"] == [("1", "High")]
@@ -186,7 +201,7 @@ def test_build_attribute_fields_orders_by_order_num() -> None:
 
 def test_form_data_to_attributes_builds_payload() -> None:
     payload = form_data_to_attributes(
-        {"attr_100": "Login is broken", "attr_101": "body", "attr_110": "1", "project": "1"},
+        {"title": "Login is broken", "description": "body", "attr_110": "1", "project": "1"},
         [TITLE, DESCRIPTION, SEVERITY],
     )
 
@@ -216,7 +231,7 @@ def test_form_data_to_attributes_marks_assignee_and_label_as_reference_values() 
 
 def test_form_data_to_attributes_skips_empty_optional_values() -> None:
     payload = form_data_to_attributes(
-        {"attr_100": "Some title", "attr_101": ""}, [TITLE, DESCRIPTION]
+        {"title": "Some title", "description": ""}, [TITLE, DESCRIPTION]
     )
     assert [item["fieldId"] for item in payload] == [100]
 

@@ -149,8 +149,8 @@ class JagaIssuesTest(APITestCase):
         assert by_name["project"]["choices"] == [("1", "Platform (PLT)")]
         assert by_name["issue_type"]["updatesForm"] is True
         assert by_name["issue_type"]["choices"] == [("10", "Bug")]
-        assert by_name["attr_100"]["default"] == "Login is broken"
-        assert "Sentry issue:" in by_name["attr_101"]["default"]
+        assert by_name["title"]["default"] == "Login is broken"
+        assert "Sentry issue:" in by_name["description"]["default"]
         assert by_name["attr_110"]["choices"] == [("1", "High")]
         assert by_name["attr_103"]["choices"] == [("uuid-1", "Ivanov Ivan")]
         assert by_name["attr_104"]["choices"] == [("7", "backend")]
@@ -186,8 +186,8 @@ class JagaIssuesTest(APITestCase):
             {
                 "project": "1",
                 "issue_type": "10",
-                "attr_100": "Login is broken",
-                "attr_101": "body",
+                "title": "Login is broken",
+                "description": "body",
                 "attr_110": "1",
             }
         )

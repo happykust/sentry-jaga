@@ -26,6 +26,10 @@ FEATURES = [
         "Sync the status: when a Sentry issue is resolved, a comment is added to the Jaga task.",
         IntegrationFeatures.ISSUE_SYNC,
     ),
+    FeatureDescription(
+        "Create a Jaga task automatically from an issue alert rule.",
+        IntegrationFeatures.TICKET_RULES,
+    ),
 ]
 
 JAGA_METADATA = IntegrationMetadata(

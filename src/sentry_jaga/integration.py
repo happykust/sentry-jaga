@@ -72,7 +72,21 @@ class JagaIntegrationProvider(IntegrationProvider):
     name = "Jaga"
     metadata = JAGA_METADATA
     integration_cls = JagaIntegration
-    features = frozenset([IntegrationFeatures.ISSUE_BASIC, IntegrationFeatures.ISSUE_SYNC])
+    # TICKET_RULES is claimed, following `jira` (`jira_server` describes the feature in its
+    # catalogue entry but omits it here — an inconsistency upstream, not a signal). We do ship
+    # the rule action (`notify_action.JagaCreateTicketAction`), so the directory should say so.
+    #
+    # The only functional gate it adds is `workflow_engine.processors.action.is_action_permitted`,
+    # which turns each claimed feature into a required org flag — here
+    # `organizations:integrations-ticket-rules`, a *permanent* feature that defaults to True
+    # (sentry/features/permanent.py). So claiming it cannot switch the action off.
+    features = frozenset(
+        [
+            IntegrationFeatures.ISSUE_BASIC,
+            IntegrationFeatures.ISSUE_SYNC,
+            IntegrationFeatures.TICKET_RULES,
+        ]
+    )
 
     def get_pipeline_views(self) -> Sequence[PipelineView[IntegrationPipeline]]:
         return [InstallationConfigView()]

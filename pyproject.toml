@@ -29,6 +29,14 @@ Repository = "https://github.com/happykust/sentry-jaga"
 Changelog = "https://github.com/happykust/sentry-jaga/blob/main/CHANGELOG.md"
 Issues = "https://github.com/happykust/sentry-jaga/issues"
 
+# This single entry point carries the whole package into Sentry: `install_plugin_apps()` puts
+# `sentry_jaga` into INSTALLED_APPS, which gives Django the installation-form template AND runs
+# `JagaAppConfig.ready()` — where the alert-rule action is added to Sentry's rule registry.
+#
+# There is deliberately NO `sentry.plugins` entry point. That is the documented door for a rule
+# action (`Plugin2.get_rules`), and on Sentry 26.3.1 it is nailed shut: `sentry.rules` builds its
+# registry at import time, during `django.setup()`, which runs *before* `register_plugins()` ever
+# registers a plugin. See the long note in `sentry_jaga/apps.py`.
 [project.entry-points."sentry.apps"]
 sentry_jaga = "sentry_jaga.apps.JagaAppConfig"
 
@@ -144,6 +152,7 @@ omit = [
     "src/sentry_jaga/integration.py",
     "src/sentry_jaga/issues.py",
     "src/sentry_jaga/sync.py",
+    "src/sentry_jaga/notify_action.py",
 ]
 
 [tool.coverage.report]

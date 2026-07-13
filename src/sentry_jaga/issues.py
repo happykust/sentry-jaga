@@ -65,11 +65,17 @@ class JagaIssuesMixin(IssueBasicIntegration):
         # create cascade (`build_create_config`) does not read `get_defaults`.
         return []
 
-    def _defaults_from_group(self, group: Group | None) -> tuple[str, str]:
-        """Pre-fill the task title and description with Sentry issue data."""
-        if group is None:
-            return "", ""
-        event = group.get_latest_event()
+    # `get_group_title` / `get_group_description` are overridden rather than merely used to
+    # pre-fill the form: the alert-rule ticket action calls them directly on the installation
+    # (`create_ticket.utils.create_issue`) to fill the task it creates. Sentry's own defaults
+    # would do there — but they know nothing of Jaga's 255-character cap on the title, and
+    # their description has a different shape from the one a manual create produces. Both
+    # paths route through here, so a rule-created task and a hand-created one come out alike.
+
+    def get_group_title(self, group: Group, event: Any, **kwargs: Any) -> str:
+        return build_title(group.title)
+
+    def get_group_description(self, group: Group, event: Any, **kwargs: Any) -> str:
         # `IssueBasicIntegration.get_group_body` is not annotated in Sentry, and strict mode
         # forbids calling untyped functions. The ignore is only needed when checking against
         # the Sentry sources (see warn_unused_ignores for this module).
@@ -79,8 +85,14 @@ class JagaIssuesMixin(IssueBasicIntegration):
             else ""
         )
         sentry_url = absolute_uri(group.get_absolute_url(params={"referrer": "jaga_integration"}))
-        description = build_description(sentry_url, group.culprit or "", body)
-        return build_title(group.title), description
+        return build_description(sentry_url, group.culprit or "", body)
+
+    def _defaults_from_group(self, group: Group | None) -> tuple[str, str]:
+        """Pre-fill the task title and description with Sentry issue data."""
+        if group is None:
+            return "", ""
+        event = group.get_latest_event()
+        return self.get_group_title(group, event), self.get_group_description(group, event)
 
     def get_create_issue_config(
         self, group: Group | None, user: Any, **kwargs: Any

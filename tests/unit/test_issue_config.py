@@ -154,8 +154,8 @@ def test_create_config_builds_cascade() -> None:
     assert by_name["project"]["choices"] == [("1", "Platform (PLT)")]
     assert by_name["issue_type"]["updatesForm"] is True
     assert by_name["issue_type"]["choices"] == [("10", "Bug")]
-    assert by_name["attr_100"]["default"] == "Login is broken"
-    assert by_name["attr_101"]["default"] == "Sentry issue: http://s/1"
+    assert by_name["title"]["default"] == "Login is broken"
+    assert by_name["description"]["default"] == "Sentry issue: http://s/1"
     assert by_name["attr_110"]["choices"] == [("1", "High"), ("2", "Low")]
 
 
@@ -330,7 +330,7 @@ def test_create_task_from_form_injects_space_and_type() -> None:
 
     create_task_from_form(
         client,
-        {"project": "1", "issue_type": "10", "attr_100": "Login is broken"},
+        {"project": "1", "issue_type": "10", "title": "Login is broken"},
     )
 
     assert client.created is not None
@@ -350,6 +350,46 @@ def test_create_task_from_form_injects_space_and_type() -> None:
     }
 
 
+def test_create_task_from_form_accepts_the_payload_an_alert_rule_sends() -> None:
+    """The exact `data` an alert rule hands to `create_issue()` must produce a titled task.
+
+    `sentry.rules.actions.integrations.create_ticket.utils.create_issue` takes the action's
+    saved config (space, task type, and whatever else the admin picked), overwrites `title`
+    and `description` with the event's own, and calls `installation.create_issue(data)`. The
+    space/type keys come from the saved rule; the title and the body come from the event and
+    were NOT in the rule config at all.
+
+    This is the whole of what a ticket rule does on our side — if the title does not land in
+    the Jaga title cell, every task filed by a rule is nameless.
+    """
+    client = FakeClient()
+
+    result = create_task_from_form(
+        client,
+        {
+            "project": "1",
+            "issue_type": "10",
+            # Written by the rule from the event that fired, not by the admin.
+            "title": "ZeroDivisionError: division by zero",
+            "description": "Sentry issue: http://s/1\n\nThis task was created automatically",
+        },
+    )
+
+    assert client.created is not None
+    payload = client.created["attributes"]
+
+    title_cell = _cell(payload, TITLE.id)
+    assert title_cell is not None, "the event title never reached Jaga's title attribute"
+    assert title_cell["value"] == "ZeroDivisionError: division by zero"
+
+    description_cell = _cell(payload, DESCRIPTION.id)
+    assert description_cell is not None
+    assert "created automatically" in description_cell["value"]
+
+    # And the ExternalIssue Sentry records for the rule-created task is named after the event.
+    assert result["title"] == "ZeroDivisionError: division by zero"
+
+
 def test_create_task_from_form_sends_attributes() -> None:
     client = FakeClient()
     result = create_task_from_form(
@@ -357,8 +397,8 @@ def test_create_task_from_form_sends_attributes() -> None:
         {
             "project": "1",
             "issue_type": "10",
-            "attr_100": "Login is broken",
-            "attr_101": "body",
+            "title": "Login is broken",
+            "description": "body",
             "attr_110": "1",
         },
     )
@@ -382,7 +422,7 @@ def test_create_task_from_form_sends_assignees_and_labels_as_references() -> Non
         {
             "project": "1",
             "issue_type": "10",
-            "attr_100": "Login is broken",
+            "title": "Login is broken",
             "attr_103": ["uuid-1", "uuid-2"],
             "attr_104": ["7"],
         },
@@ -412,7 +452,7 @@ def test_create_task_from_form_returns_task_id_in_metadata() -> None:
     """`metadata` travels into `ExternalIssue`. Without `task_id`, every resolve would look
     the task up by code again — even though Jaga has just returned the id itself."""
     result = create_task_from_form(
-        FakeClient(), {"project": "1", "issue_type": "10", "attr_100": "Login is broken"}
+        FakeClient(), {"project": "1", "issue_type": "10", "title": "Login is broken"}
     )
 
     assert result["metadata"] == {"task_id": 500}
@@ -423,7 +463,7 @@ def test_created_task_needs_no_lookup_to_resolve_its_id() -> None:
     round trip to Jaga."""
     client = FakeClient()
     created = create_task_from_form(
-        client, {"project": "1", "issue_type": "10", "attr_100": "Login is broken"}
+        client, {"project": "1", "issue_type": "10", "title": "Login is broken"}
     )
 
     assert resolve_task_id(client, created["key"], created["metadata"]) == 500

@@ -64,9 +64,36 @@ SOURCED_OBJECT_TYPES = frozenset({ASSIGNEE_OBJECT_TYPE, LABEL_OBJECT_TYPE})
 
 FIELD_PREFIX = "attr_"
 
+# Sentry's own names for the two fields every issue-tracking integration has; see
+# `IssueBasicIntegration.get_create_issue_config`, whose default form is exactly
+# `title` + `description`.
+#
+# Using them for the Jaga title/description attributes instead of the generic `attr_<id>`
+# is NOT cosmetic — the alert-rule ticket action depends on these names:
+#
+# * `sentry.rules.actions.integrations.create_ticket.utils.create_issue` overwrites
+#   `data["title"]` / `data["description"]` with the title and body of the event that fired
+#   the rule, then hands `data` to `create_issue()`. Under an `attr_<id>` name we would never
+#   see those values, and every rule-created task would carry the empty default that was
+#   saved into the rule config (`get_create_issue_config` is called with `group=None` there).
+# * The ticket-rule modal hides fields named `title`/`description` and shows "This will be
+#   the same as the Sentry Issue." in their place. An `attr_<id>` field would instead be
+#   rendered as an editable box whose value the rule then silently ignores.
+CANONICAL_FIELD_NAMES = {
+    TITLE_OBJECT_TYPE: "title",
+    DESCRIPTION_OBJECT_TYPE: "description",
+}
+
 
 def field_name(attr: Attribute) -> str:
-    """Name of the Sentry form field for a Jaga attribute."""
+    """Name of the Sentry form field for a Jaga attribute.
+
+    The title and the description travel under Sentry's canonical names; everything else is
+    named after the Jaga attribute id, because nothing outside this package knows what it is.
+    """
+    canonical = CANONICAL_FIELD_NAMES.get(attr.object_type_name_m)
+    if canonical is not None:
+        return canonical
     return f"{FIELD_PREFIX}{attr.id}"
 
 
