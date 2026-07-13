@@ -5,6 +5,7 @@ import pytest
 import responses
 
 from sentry_jaga.client.api import JagaClient
+from sentry_jaga.client.auth import InMemoryCache
 from sentry_jaga.client.exceptions import JagaAuthError, JagaNotFoundError, JagaServerError
 
 BASE = "https://jaga.example.com"
@@ -92,6 +93,96 @@ def test_get_projects_unwraps_page(client: JagaClient) -> None:
     )
     projects = client.get_projects()
     assert [p.code for p in projects] == ["PLT", "BIL"]
+
+
+@responses.activate
+def test_get_projects_reads_every_page(client: JagaClient) -> None:
+    """Пространств больше страницы — дочитываем до `totalPages`, а не обрываемся на первой."""
+    _mock_login()
+    responses.add(
+        responses.GET,
+        f"{API}/v1/project/list/my",
+        json={
+            "content": [{"id": 1, "title": "Платформа", "code": "PLT"}],
+            "totalPages": 2,
+            "pageNumber": 0,
+            "totalElements": 2,
+        },
+        status=200,
+    )
+    responses.add(
+        responses.GET,
+        f"{API}/v1/project/list/my",
+        json={
+            "content": [{"id": 2, "title": "Биллинг", "code": "BIL"}],
+            "totalPages": 2,
+            "pageNumber": 1,
+            "totalElements": 2,
+        },
+        status=200,
+    )
+
+    assert [p.code for p in client.get_projects()] == ["PLT", "BIL"]
+
+    pages = [
+        call.request.url.split("page=")[1].split("&")[0]
+        for call in responses.calls
+        if "/v1/project/list/my" in call.request.url
+    ]
+    assert pages == ["0", "1"]
+
+
+@responses.activate
+def test_get_projects_is_cached(client: JagaClient) -> None:
+    """Повторный вызов берёт список из кэша: форма линковки дёргает его на каждую клавишу."""
+    _mock_login()
+    responses.add(
+        responses.GET,
+        f"{API}/v1/project/list/my",
+        json={
+            "content": [{"id": 1, "title": "Платформа", "code": "PLT"}],
+            "totalPages": 1,
+            "pageNumber": 0,
+            "totalElements": 1,
+        },
+        status=200,
+    )
+
+    first = client.get_projects()
+    second = client.get_projects()
+
+    assert [p.code for p in first] == [p.code for p in second] == ["PLT"]
+    list_calls = [c for c in responses.calls if "/v1/project/list/my" in c.request.url]
+    assert len(list_calls) == 1
+
+
+@responses.activate
+def test_projects_cache_is_shared_between_clients() -> None:
+    """Кэш внедряется снаружи (в проде — Django cache), поэтому переживает HTTP-запрос."""
+    cache = InMemoryCache()
+    _mock_login()
+    responses.add(
+        responses.GET,
+        f"{API}/v1/project/list/my",
+        json={
+            "content": [{"id": 1, "title": "Платформа", "code": "PLT"}],
+            "totalPages": 1,
+            "pageNumber": 0,
+            "totalElements": 1,
+        },
+        status=200,
+    )
+
+    def make() -> JagaClient:
+        return JagaClient(
+            instance_url=BASE, email="bot@example.com", password="secret", cache=cache
+        )
+
+    assert [p.code for p in make().get_projects()] == ["PLT"]
+    assert [p.code for p in make().get_projects()] == ["PLT"]
+
+    list_calls = [c for c in responses.calls if "/v1/project/list/my" in c.request.url]
+    assert len(list_calls) == 1
 
 
 @responses.activate
@@ -283,6 +374,28 @@ def test_second_401_in_a_row_raises_instead_of_looping(client: JagaClient) -> No
 
     logins = [call for call in responses.calls if call.request.url.endswith("/v1/auth/login")]
     assert len(logins) == 2  # первичный логин + ровно один релогин
+
+
+@responses.activate
+def test_403_does_not_trigger_relogin(client: JagaClient) -> None:
+    """403 — «токен валиден, прав нет»: релогин его не починит, только замаскирует.
+
+    Ошибка обязана долететь до вызывающего с первого раза, без второго логина и
+    без повторного запроса.
+    """
+    _mock_login()
+    responses.add(
+        responses.GET, f"{API}/v1/project/list/my", json={"message": "нет прав"}, status=403
+    )
+
+    with pytest.raises(JagaAuthError) as exc_info:
+        client.get_projects()
+
+    assert exc_info.value.status_code == 403
+    logins = [c for c in responses.calls if c.request.url.endswith("/v1/auth/login")]
+    list_calls = [c for c in responses.calls if "/v1/project/list/my" in c.request.url]
+    assert len(logins) == 1  # только первичный логин, релогина не было
+    assert len(list_calls) == 1  # и запрос не повторялся
 
 
 @responses.activate

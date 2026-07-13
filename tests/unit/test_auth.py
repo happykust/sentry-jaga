@@ -2,7 +2,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from sentry_jaga.client.auth import InMemoryTokenCache, TokenManager
+from sentry_jaga.client.auth import InMemoryCache, TokenManager
 from sentry_jaga.client.models import Token
 
 
@@ -28,7 +28,7 @@ def _manager(logins: list[Token], refreshes: list[Token]) -> tuple[TokenManager,
     manager = TokenManager(
         login=login,
         refresh=refresh,
-        cache=InMemoryTokenCache(),
+        cache=InMemoryCache(),
         cache_key="jaga:test",
     )
     return manager, calls
@@ -67,7 +67,7 @@ def test_falls_back_to_login_when_refresh_fails() -> None:
         raise RuntimeError("refresh отклонён")
 
     manager = TokenManager(
-        login=login, refresh=refresh, cache=InMemoryTokenCache(), cache_key="jaga:test"
+        login=login, refresh=refresh, cache=InMemoryCache(), cache_key="jaga:test"
     )
     assert manager.get_access_token() == "at3"
     assert calls["refresh"] == 1
@@ -83,7 +83,7 @@ def test_invalidate_forces_relogin() -> None:
 
 
 def test_token_shared_via_cache_between_managers() -> None:
-    cache = InMemoryTokenCache()
+    cache = InMemoryCache()
     calls = {"login": 0}
 
     def login() -> Token:
@@ -112,7 +112,7 @@ def test_token_shared_via_cache_between_managers() -> None:
     ],
 )
 def test_corrupted_cache_entry_triggers_relogin(corrupted: dict[str, str]) -> None:
-    cache = InMemoryTokenCache()
+    cache = InMemoryCache()
     cache.set("jaga:test", corrupted, timeout=60)
 
     calls = {"login": 0}

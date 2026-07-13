@@ -4,33 +4,38 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Protocol
+from typing import Any, Protocol
 
 from sentry_jaga.client.models import Token
 
 DEFAULT_LEEWAY_SECONDS = 30
 
 
-class TokenCache(Protocol):
-    """Минимальный контракт кэша токена (совместим с Django cache)."""
+class Cache(Protocol):
+    """Минимальный контракт кэша (совместим с Django cache).
 
-    def get(self, key: str) -> dict[str, str] | None: ...
+    Внедряется снаружи — ядро не знает про Django. Хранит и токен доступа, и
+    короткоживущие справочники (список пространств), поэтому значение — `dict[str, Any]`,
+    а не только строковые поля токена.
+    """
 
-    def set(self, key: str, value: dict[str, str], timeout: int) -> None: ...
+    def get(self, key: str) -> dict[str, Any] | None: ...
+
+    def set(self, key: str, value: dict[str, Any], timeout: int) -> None: ...
 
     def delete(self, key: str) -> None: ...
 
 
-class InMemoryTokenCache:
+class InMemoryCache:
     """Кэш в памяти процесса. Дефолт и удобен в тестах."""
 
     def __init__(self) -> None:
-        self._data: dict[str, dict[str, str]] = {}
+        self._data: dict[str, dict[str, Any]] = {}
 
-    def get(self, key: str) -> dict[str, str] | None:
+    def get(self, key: str) -> dict[str, Any] | None:
         return self._data.get(key)
 
-    def set(self, key: str, value: dict[str, str], timeout: int) -> None:
+    def set(self, key: str, value: dict[str, Any], timeout: int) -> None:
         self._data[key] = value
 
     def delete(self, key: str) -> None:
@@ -45,7 +50,7 @@ class TokenManager:
         *,
         login: Callable[[], Token],
         refresh: Callable[[str], Token],
-        cache: TokenCache,
+        cache: Cache,
         cache_key: str,
         leeway_seconds: int = DEFAULT_LEEWAY_SECONDS,
     ) -> None:

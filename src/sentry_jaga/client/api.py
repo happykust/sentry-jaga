@@ -8,7 +8,7 @@ from urllib.parse import urljoin
 
 import requests
 
-from sentry_jaga.client.auth import InMemoryTokenCache, TokenCache, TokenManager
+from sentry_jaga.client.auth import Cache, InMemoryCache, TokenManager
 from sentry_jaga.client.exceptions import JagaApiError, error_from_response
 from sentry_jaga.client.models import Attribute, Project, TaskRef, TaskType, Token
 
@@ -16,6 +16,10 @@ API_PREFIX = "/external-api"
 STATUS_MODIFIER_TODO = 1
 DEFAULT_TIMEOUT = 30
 DEFAULT_PAGE_SIZE = 100
+# Список пространств меняется редко, а форма линковки перезапрашивает его на каждое
+# нажатие клавиши (`updatesForm` без дебаунса). Короткий TTL гасит шквал, не рискуя
+# надолго показать устаревший список.
+PROJECTS_CACHE_TTL = 60
 
 
 class JagaClient:
@@ -27,7 +31,7 @@ class JagaClient:
         email: str,
         password: str,
         *,
-        cache: TokenCache | None = None,
+        cache: Cache | None = None,
         session: requests.Session | None = None,
         timeout: int = DEFAULT_TIMEOUT,
     ) -> None:
@@ -36,17 +40,21 @@ class JagaClient:
         self._password = password
         self._timeout = timeout
         self._session = session or requests.Session()
+        self._cache = cache or InMemoryCache()
+        prefix = self._cache_prefix(instance_url, email)
+        self._projects_cache_key = f"{prefix}:projects"
         self._tokens = TokenManager(
             login=self.login,
             refresh=self.refresh,
-            cache=cache or InMemoryTokenCache(),
-            cache_key=self._cache_key(instance_url, email),
+            cache=self._cache,
+            cache_key=f"{prefix}:token",
         )
 
     @staticmethod
-    def _cache_key(instance_url: str, email: str) -> str:
+    def _cache_prefix(instance_url: str, email: str) -> str:
+        """Общий префикс ключей кэша для пары «инсталляция + сервисный аккаунт»."""
         digest = hashlib.sha256(f"{instance_url}|{email}".encode()).hexdigest()[:32]
-        return f"sentry-jaga:token:{digest}"
+        return f"sentry-jaga:{digest}"
 
     def _url(self, path: str) -> str:
         return urljoin(self.base_url + "/", path.lstrip("/"))
@@ -67,13 +75,17 @@ class JagaClient:
         raise error_from_response(response.status_code, body)
 
     def _authed(self, method: str, path: str, **kwargs: Any) -> Any:
-        """Запрос с Bearer-токеном; при 401 один раз перелогинивается."""
+        """Запрос с Bearer-токеном; при 401 один раз перелогинивается.
+
+        Только 401: 403 у Яги означает «токен валиден, но прав на объект нет» —
+        релогин его не исправит, лишь добавит запрос и замаскирует настоящую причину.
+        """
         headers = dict(kwargs.pop("headers", {}))
         headers["Authorization"] = f"Bearer {self._tokens.get_access_token()}"
         try:
             return self._send(method, path, headers=headers, **kwargs)
         except JagaApiError as exc:
-            if exc.status_code not in (401, 403):
+            if exc.status_code != 401:
                 raise
             self._tokens.invalidate()
             headers["Authorization"] = f"Bearer {self._tokens.get_access_token()}"
@@ -94,10 +106,31 @@ class JagaClient:
     # --- справочники ----------------------------------------------------
 
     def get_projects(self) -> list[Project]:
-        payload = self._authed(
-            "GET", "/v1/project/list/my", params={"page": 0, "size": DEFAULT_PAGE_SIZE}
-        )
-        return [Project.from_api(item) for item in payload.get("content", [])]
+        """Все доступные пространства (со всех страниц), с коротким кэшем.
+
+        Кэш общий с токеном (в проде — Django cache Sentry), поэтому переживает
+        отдельный HTTP-запрос: форма линковки дёргает список на каждое нажатие клавиши.
+        """
+        cached = self._cache.get(self._projects_cache_key)
+        if cached is not None:
+            return [Project.from_api(item) for item in cached.get("content", [])]
+
+        content = self._fetch_all_projects()
+        self._cache.set(self._projects_cache_key, {"content": content}, timeout=PROJECTS_CACHE_TTL)
+        return [Project.from_api(item) for item in content]
+
+    def _fetch_all_projects(self) -> list[dict[str, Any]]:
+        """Дочитать все страницы `/v1/project/list/my` — 101-е пространство тоже видимо."""
+        items: list[dict[str, Any]] = []
+        page = 0
+        while True:
+            payload = self._authed(
+                "GET", "/v1/project/list/my", params={"page": page, "size": DEFAULT_PAGE_SIZE}
+            )
+            items.extend(payload.get("content", []))
+            page += 1
+            if page >= int(payload.get("totalPages") or 0):
+                return items
 
     def get_task_types(self, project_id: int) -> list[TaskType]:
         payload = self._authed("GET", f"/v1/project/{project_id}/taskType")
