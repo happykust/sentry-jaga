@@ -40,7 +40,7 @@ def test_login_returns_token(client: JagaClient) -> None:
 
 @responses.activate
 def test_refresh_sends_refresh_token_and_returns_new_token(client: JagaClient) -> None:
-    """Обновление токена уходит на /v1/auth/refresh с телом {"refreshToken": ...}."""
+    """A token renewal goes to /v1/auth/refresh with a {"refreshToken": ...} body."""
     responses.add(
         responses.POST,
         f"{API}/v1/auth/refresh",
@@ -82,8 +82,8 @@ def test_get_projects_unwraps_page(client: JagaClient) -> None:
         f"{API}/v1/project/list/my",
         json={
             "content": [
-                {"id": 1, "title": "Платформа", "code": "PLT"},
-                {"id": 2, "title": "Биллинг", "code": "BIL"},
+                {"id": 1, "title": "Platform", "code": "PLT"},
+                {"id": 2, "title": "Billing", "code": "BIL"},
             ],
             "totalPages": 1,
             "pageNumber": 0,
@@ -97,13 +97,14 @@ def test_get_projects_unwraps_page(client: JagaClient) -> None:
 
 @responses.activate
 def test_get_projects_reads_every_page(client: JagaClient) -> None:
-    """Пространств больше страницы — дочитываем до `totalPages`, а не обрываемся на первой."""
+    """More spaces than fit on one page — read up to `totalPages` instead of stopping at the
+    first one."""
     _mock_login()
     responses.add(
         responses.GET,
         f"{API}/v1/project/list/my",
         json={
-            "content": [{"id": 1, "title": "Платформа", "code": "PLT"}],
+            "content": [{"id": 1, "title": "Platform", "code": "PLT"}],
             "totalPages": 2,
             "pageNumber": 0,
             "totalElements": 2,
@@ -114,7 +115,7 @@ def test_get_projects_reads_every_page(client: JagaClient) -> None:
         responses.GET,
         f"{API}/v1/project/list/my",
         json={
-            "content": [{"id": 2, "title": "Биллинг", "code": "BIL"}],
+            "content": [{"id": 2, "title": "Billing", "code": "BIL"}],
             "totalPages": 2,
             "pageNumber": 1,
             "totalElements": 2,
@@ -134,13 +135,13 @@ def test_get_projects_reads_every_page(client: JagaClient) -> None:
 
 @responses.activate
 def test_get_projects_is_cached(client: JagaClient) -> None:
-    """Повторный вызов берёт список из кэша: форма линковки дёргает его на каждую клавишу."""
+    """A repeat call takes the list from the cache: the link form pulls it on every key."""
     _mock_login()
     responses.add(
         responses.GET,
         f"{API}/v1/project/list/my",
         json={
-            "content": [{"id": 1, "title": "Платформа", "code": "PLT"}],
+            "content": [{"id": 1, "title": "Platform", "code": "PLT"}],
             "totalPages": 1,
             "pageNumber": 0,
             "totalElements": 1,
@@ -158,14 +159,15 @@ def test_get_projects_is_cached(client: JagaClient) -> None:
 
 @responses.activate
 def test_projects_cache_is_shared_between_clients() -> None:
-    """Кэш внедряется снаружи (в проде — Django cache), поэтому переживает HTTP-запрос."""
+    """The cache is injected from outside (the Django cache in production), so it outlives a
+    single HTTP request."""
     cache = InMemoryCache()
     _mock_login()
     responses.add(
         responses.GET,
         f"{API}/v1/project/list/my",
         json={
-            "content": [{"id": 1, "title": "Платформа", "code": "PLT"}],
+            "content": [{"id": 1, "title": "Platform", "code": "PLT"}],
             "totalPages": 1,
             "pageNumber": 0,
             "totalElements": 1,
@@ -191,11 +193,11 @@ def test_get_task_types(client: JagaClient) -> None:
     responses.add(
         responses.GET,
         f"{API}/v1/project/1/taskType",
-        json=[{"id": 10, "typeName": "Баг"}, {"id": 11, "typeName": "Задача"}],
+        json=[{"id": 10, "typeName": "Bug"}, {"id": 11, "typeName": "Task"}],
         status=200,
     )
     types = client.get_task_types(1)
-    assert [(t.id, t.name) for t in types] == [(10, "Баг"), (11, "Задача")]
+    assert [(t.id, t.name) for t in types] == [(10, "Bug"), (11, "Task")]
 
 
 @responses.activate
@@ -206,24 +208,24 @@ def test_get_task_type_attributes_flattens_groups(client: JagaClient) -> None:
         f"{API}/v1/project/1/taskType/10",
         json={
             "id": 10,
-            "typeName": "Баг",
+            "typeName": "Bug",
             "modulesEnabled": [],
             "groups": [
                 {
-                    "title": "Основное",
+                    "title": "General",
                     "orderNum": 0,
                     "attributes": [
-                        {"id": 100, "name": "Название", "objectTypeNameM": "task.title"},
-                        {"id": 101, "name": "Описание", "objectTypeNameM": "task.content_data"},
+                        {"id": 100, "name": "Title", "objectTypeNameM": "task.title"},
+                        {"id": 101, "name": "Description", "objectTypeNameM": "task.content_data"},
                     ],
                 },
                 {
-                    "title": "Прочее",
+                    "title": "Other",
                     "orderNum": 1,
                     "attributes": [
                         {
                             "id": 102,
-                            "name": "Приоритет",
+                            "name": "Priority",
                             "objectTypeNameM": "task.priority",
                             "dictionaryId": 55,
                         }
@@ -245,16 +247,16 @@ def test_get_dictionary_values(client: JagaClient) -> None:
         responses.GET,
         f"{API}/v1/listRef/55/any",
         json={
-            "name": "Приоритеты",
+            "name": "Priorities",
             "itemsMap": [],
             "items": [
-                {"id": 1, "value": "Высокий", "orderNum": 0},
-                {"id": 2, "value": "Низкий", "orderNum": 1},
+                {"id": 1, "value": "High", "orderNum": 0},
+                {"id": 2, "value": "Low", "orderNum": 1},
             ],
         },
         status=200,
     )
-    assert client.get_dictionary_values(55) == [("1", "Высокий"), ("2", "Низкий")]
+    assert client.get_dictionary_values(55) == [("1", "High"), ("2", "Low")]
 
 
 @responses.activate
@@ -274,14 +276,17 @@ def test_create_task_posts_payload_and_returns_ref(client: JagaClient) -> None:
             "statusTransitions": [],
             "colorIndicator": [],
             "timeInStatus": {},
-            "attributes": [{"fieldId": 100, "value": "Падает логин", "referenceValue": False}],
+            "attributes": [{"fieldId": 100, "value": "Login is broken", "referenceValue": False}],
         },
         status=200,
     )
-    attributes = [{"fieldId": 100, "value": "Падает логин", "referenceValue": False, "addInfo": {}}]
+    attributes = [
+        {"fieldId": 100, "value": "Login is broken", "referenceValue": False, "addInfo": {}}
+    ]
     ref = client.create_task(project_id=1, task_type_id=10, attributes=attributes)
 
     assert (ref.id, ref.code) == (500, "PLT-500")
+
     import json
 
     sent = json.loads(responses.calls[-1].request.body)
@@ -303,7 +308,7 @@ def test_get_task_by_code_returns_task(client: JagaClient) -> None:
             "statusId": 3,
             "statusModifierId": 2,
             "taskTypeId": 10,
-            "attributes": [{"fieldId": 100, "value": "Падает логин", "referenceValue": False}],
+            "attributes": [{"fieldId": 100, "value": "Login is broken", "referenceValue": False}],
         },
         status=200,
     )
@@ -313,7 +318,7 @@ def test_get_task_by_code_returns_task(client: JagaClient) -> None:
     assert task["code"] == "PLT-500"
     assert task["statusId"] == 3
     assert task["attributes"] == [
-        {"fieldId": 100, "value": "Падает логин", "referenceValue": False}
+        {"fieldId": 100, "value": "Login is broken", "referenceValue": False}
     ]
 
 
@@ -324,27 +329,31 @@ def test_search_tasks(client: JagaClient) -> None:
         responses.GET,
         f"{API}/v1/task/searchByTitleCode",
         json={
-            "content": [{"id": 5, "code": "PLT-5", "title": "Падает логин", "typeRef": {}}],
+            "content": [{"id": 5, "code": "PLT-5", "title": "Login is broken", "typeRef": {}}],
             "totalPages": 1,
             "pageNumber": 0,
             "totalElements": 1,
         },
         status=200,
     )
-    results = client.search_tasks(project_id=1, text="логин")
-    assert [(r.code, r.title) for r in results] == [("PLT-5", "Падает логин")]
+    results = client.search_tasks(project_id=1, text="login")
+    assert [(r.code, r.title) for r in results] == [("PLT-5", "Login is broken")]
 
 
 @responses.activate
 def test_create_comment(client: JagaClient) -> None:
     _mock_login()
     responses.add(responses.POST, f"{API}/v1/comment", json={"id": 1, "taskId": 500}, status=200)
-    client.create_comment(task_id=500, content="Решено в Sentry")
+    client.create_comment(task_id=500, content="Resolved in Sentry")
 
     import json
 
     sent = json.loads(responses.calls[-1].request.body)
-    assert sent == {"taskId": 500, "contentComment": "Решено в Sentry", "attachIsPending": False}
+    assert sent == {
+        "taskId": 500,
+        "contentComment": "Resolved in Sentry",
+        "attachIsPending": False,
+    }
 
 
 @responses.activate
@@ -363,7 +372,7 @@ def test_relogins_once_on_401(client: JagaClient) -> None:
 
 @responses.activate
 def test_second_401_in_a_row_raises_instead_of_looping(client: JagaClient) -> None:
-    """Релогин делается ровно один раз: повторный 401 пробрасывается, а не зацикливается."""
+    """The re-login happens exactly once: a second 401 is raised rather than looped on."""
     _mock_login()
     responses.add(responses.GET, f"{API}/v1/project/list/my", json={"message": "no"}, status=401)
     responses.add(responses.POST, f"{API}/v1/auth/login", json=AUTH_OK, status=200)
@@ -373,19 +382,20 @@ def test_second_401_in_a_row_raises_instead_of_looping(client: JagaClient) -> No
         client.get_projects()
 
     logins = [call for call in responses.calls if call.request.url.endswith("/v1/auth/login")]
-    assert len(logins) == 2  # первичный логин + ровно один релогин
+    assert len(logins) == 2  # the initial login plus exactly one re-login
 
 
 @responses.activate
 def test_403_does_not_trigger_relogin(client: JagaClient) -> None:
-    """403 — «токен валиден, прав нет»: релогин его не починит, только замаскирует.
+    """A 403 means "the token is valid, the rights are not": re-logging in would not fix it,
+    only mask it.
 
-    Ошибка обязана долететь до вызывающего с первого раза, без второго логина и
-    без повторного запроса.
+    The error must reach the caller on the first attempt, with no second login and no repeat
+    request.
     """
     _mock_login()
     responses.add(
-        responses.GET, f"{API}/v1/project/list/my", json={"message": "нет прав"}, status=403
+        responses.GET, f"{API}/v1/project/list/my", json={"message": "forbidden"}, status=403
     )
 
     with pytest.raises(JagaAuthError) as exc_info:
@@ -394,8 +404,8 @@ def test_403_does_not_trigger_relogin(client: JagaClient) -> None:
     assert exc_info.value.status_code == 403
     logins = [c for c in responses.calls if c.request.url.endswith("/v1/auth/login")]
     list_calls = [c for c in responses.calls if "/v1/project/list/my" in c.request.url]
-    assert len(logins) == 1  # только первичный логин, релогина не было
-    assert len(list_calls) == 1  # и запрос не повторялся
+    assert len(logins) == 1  # only the initial login, no re-login
+    assert len(list_calls) == 1  # and the request was not repeated
 
 
 @responses.activate
@@ -404,7 +414,7 @@ def test_raises_not_found(client: JagaClient) -> None:
     responses.add(
         responses.GET,
         f"{API}/v1/task/findExtendedWithFlexField/code/PLT-999",
-        json={"message": "Задача не найдена"},
+        json={"message": "Task not found"},
         status=404,
     )
     with pytest.raises(JagaNotFoundError):
@@ -414,7 +424,7 @@ def test_raises_not_found(client: JagaClient) -> None:
 @responses.activate
 def test_raises_auth_error_when_login_fails(client: JagaClient) -> None:
     responses.add(
-        responses.POST, f"{API}/v1/auth/login", json={"message": "Неверный пароль"}, status=401
+        responses.POST, f"{API}/v1/auth/login", json={"message": "Invalid password"}, status=401
     )
     with pytest.raises(JagaAuthError):
         client.login()
@@ -428,10 +438,10 @@ def test_raises_server_error(client: JagaClient) -> None:
         client.get_projects()
 
 
-# --- разбор тела ответа ---------------------------------------------------
-# Яга не на всех эндпоинтах отвечает JSON-ом: бывает пустое тело (204 на комментарии)
-# и текст от прокси перед Ягой. Проверяем это на `_send` — только он и возвращает
-# разобранное тело как есть, публичные методы его уже интерпретируют.
+# --- response body parsing ------------------------------------------------
+# Jaga does not answer with JSON on every endpoint: there can be an empty body (a 204 on a
+# comment) and plain text from a proxy in front of Jaga. We check this on `_send` — it is
+# the only place that returns the parsed body as is; the public methods already interpret it.
 
 
 @responses.activate
@@ -450,7 +460,8 @@ def test_send_returns_text_on_non_json_ok_body(client: JagaClient) -> None:
 
 @responses.activate
 def test_send_raises_with_text_body_on_non_json_error(client: JagaClient) -> None:
-    """Прокси может ответить HTML-ошибкой: исключение всё равно поднимается, в body — текст."""
+    """A proxy may answer with an HTML error: the exception is still raised, with the text in
+    `body`."""
     responses.add(
         responses.GET,
         f"{API}/v1/project/list/my",

@@ -17,11 +17,11 @@ def _attr(attr_id: int, name: str, object_type: str, **kwargs: Any) -> Attribute
     return Attribute(id=attr_id, name=name, object_type_name_m=object_type, **kwargs)
 
 
-TITLE = _attr(100, "Название", TITLE_OBJECT_TYPE, required=True)
-DESCRIPTION = _attr(101, "Описание", DESCRIPTION_OBJECT_TYPE)
-PRIORITY = _attr(102, "Приоритет", "task.priority", dictionary_id=55, required=True)
-LABELS = _attr(103, "Метки", "task.labels", dictionary_id=56, multiple=True)
-HIDDEN = _attr(104, "Служебное", "task.internal", visible=False)
+TITLE = _attr(100, "Title", TITLE_OBJECT_TYPE, required=True)
+DESCRIPTION = _attr(101, "Description", DESCRIPTION_OBJECT_TYPE)
+PRIORITY = _attr(102, "Priority", "task.priority", dictionary_id=55, required=True)
+LABELS = _attr(103, "Labels", "task.labels", dictionary_id=56, multiple=True)
+HIDDEN = _attr(104, "Internal", "task.internal", visible=False)
 
 
 def test_field_name_is_stable() -> None:
@@ -34,30 +34,30 @@ def test_find_attribute() -> None:
 
 
 def test_attribute_to_field_plain_string() -> None:
-    field = attribute_to_field(_attr(1, "Комментарий", "task.custom"))
+    field = attribute_to_field(_attr(1, "Comment", "task.custom"))
     assert field["name"] == "attr_1"
-    assert field["label"] == "Комментарий"
+    assert field["label"] == "Comment"
     assert field["type"] == "string"
     assert field["required"] is False
 
 
 def test_attribute_to_field_title_is_required_string() -> None:
-    field = attribute_to_field(TITLE, default="Падает логин")
+    field = attribute_to_field(TITLE, default="Login is broken")
     assert field["type"] == "string"
     assert field["required"] is True
-    assert field["default"] == "Падает логин"
+    assert field["default"] == "Login is broken"
 
 
 def test_attribute_to_field_description_is_textarea() -> None:
-    field = attribute_to_field(DESCRIPTION, default="тело")
+    field = attribute_to_field(DESCRIPTION, default="body")
     assert field["type"] == "textarea"
-    assert field["default"] == "тело"
+    assert field["default"] == "body"
 
 
 def test_attribute_to_field_dictionary_is_select_with_choices() -> None:
-    field = attribute_to_field(PRIORITY, choices=[("1", "Высокий"), ("2", "Низкий")])
+    field = attribute_to_field(PRIORITY, choices=[("1", "High"), ("2", "Low")])
     assert field["type"] == "select"
-    assert field["choices"] == [("1", "Высокий"), ("2", "Низкий")]
+    assert field["choices"] == [("1", "High"), ("2", "Low")]
     assert field["required"] is True
     assert "multiple" not in field
 
@@ -71,24 +71,24 @@ def test_attribute_to_field_multiple_dictionary() -> None:
 def test_build_attribute_fields_skips_hidden_and_prefills_system() -> None:
     fields = build_attribute_fields(
         attributes=[TITLE, DESCRIPTION, PRIORITY, HIDDEN],
-        choices_by_dictionary={55: [("1", "Высокий")]},
-        title="Падает логин",
-        description="Sentry-issue: https://...",
+        choices_by_dictionary={55: [("1", "High")]},
+        title="Login is broken",
+        description="Sentry issue: https://...",
     )
     names = [f["name"] for f in fields]
     assert names == ["attr_100", "attr_101", "attr_102"]
     assert "attr_104" not in names
 
     by_name = {f["name"]: f for f in fields}
-    assert by_name["attr_100"]["default"] == "Падает логин"
-    assert by_name["attr_101"]["default"] == "Sentry-issue: https://..."
-    assert by_name["attr_102"]["choices"] == [("1", "Высокий")]
+    assert by_name["attr_100"]["default"] == "Login is broken"
+    assert by_name["attr_101"]["default"] == "Sentry issue: https://..."
+    assert by_name["attr_102"]["choices"] == [("1", "High")]
 
 
 def test_form_data_to_attributes_builds_payload() -> None:
     form_data = {
-        "attr_100": "Падает логин",
-        "attr_101": "тело",
+        "attr_100": "Login is broken",
+        "attr_101": "body",
         "attr_102": "1",
         "project": "1",
         "issue_type": "10",
@@ -96,8 +96,8 @@ def test_form_data_to_attributes_builds_payload() -> None:
     payload = form_data_to_attributes(form_data, [TITLE, DESCRIPTION, PRIORITY])
 
     assert payload == [
-        {"fieldId": 100, "value": "Падает логин", "referenceValue": False, "addInfo": {}},
-        {"fieldId": 101, "value": "тело", "referenceValue": False, "addInfo": {}},
+        {"fieldId": 100, "value": "Login is broken", "referenceValue": False, "addInfo": {}},
+        {"fieldId": 101, "value": "body", "referenceValue": False, "addInfo": {}},
         {
             "fieldId": 102,
             "value": "1",
@@ -110,7 +110,7 @@ def test_form_data_to_attributes_builds_payload() -> None:
 
 def test_form_data_to_attributes_skips_empty_optional_values() -> None:
     payload = form_data_to_attributes(
-        {"attr_100": "Заголовок", "attr_101": ""}, [TITLE, DESCRIPTION]
+        {"attr_100": "Some title", "attr_101": ""}, [TITLE, DESCRIPTION]
     )
     assert [item["fieldId"] for item in payload] == [100]
 
@@ -126,11 +126,11 @@ def test_extract_title_from_raw_task() -> None:
         "id": 5,
         "code": "PLT-5",
         "attributes": [
-            {"fieldId": 101, "value": "тело", "objectTypeNameM": DESCRIPTION_OBJECT_TYPE},
-            {"fieldId": 100, "value": "Падает логин", "objectTypeNameM": TITLE_OBJECT_TYPE},
+            {"fieldId": 101, "value": "body", "objectTypeNameM": DESCRIPTION_OBJECT_TYPE},
+            {"fieldId": 100, "value": "Login is broken", "objectTypeNameM": TITLE_OBJECT_TYPE},
         ],
     }
-    assert extract_title(raw) == "Падает логин"
+    assert extract_title(raw) == "Login is broken"
 
 
 def test_extract_title_missing_returns_code() -> None:

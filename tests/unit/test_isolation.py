@@ -1,4 +1,4 @@
-"""Ядро (client/, fields, descriptions, issue_config) не должно импортировать sentry."""
+"""The core (client/, fields, descriptions, issue_config) must not import sentry."""
 
 import subprocess
 import sys
@@ -16,7 +16,7 @@ CORE_MODULES = [
 
 
 def test_core_modules_do_not_import_sentry() -> None:
-    """Импортируем всё ядро в чистом процессе: sentry не должен подтянуться."""
+    """Import the whole core in a clean process: sentry must not be pulled in."""
     code = (
         "import sys;"
         + "".join(f"import {m};" for m in CORE_MODULES)
@@ -27,4 +27,4 @@ def test_core_modules_do_not_import_sentry() -> None:
         [sys.executable, "-c", code], capture_output=True, text=True, check=True
     )
     leaked = [m for m in result.stdout.strip().split(",") if m]
-    assert leaked == [], f"Ядро подтянуло sentry: {leaked}"
+    assert leaked == [], f"The core pulled in sentry: {leaked}"

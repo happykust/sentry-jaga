@@ -23,7 +23,7 @@ class JagaSyncTest(APITestCase):
         super().setUp()
         self.integration = self.create_provider_integration(
             provider="jaga",
-            name="Яга",
+            name="Jaga",
             external_id=BASE,
             metadata={"instance_url": BASE, "email": "bot@example.com", "password": "secret"},
         )
@@ -33,7 +33,7 @@ class JagaSyncTest(APITestCase):
             organization_id=self.organization.id,
             integration_id=self.integration.id,
             key="PLT-500",
-            title="Падает логин",
+            title="Login is broken",
             metadata={"task_id": 500},
         )
 
@@ -41,8 +41,8 @@ class JagaSyncTest(APITestCase):
         assert self.installation.should_sync("outbound_status") is True
 
     def test_organization_config_exposes_sync_toggle_enabled_by_default(self) -> None:
-        """Дефолт поля обязан совпадать с дефолтом `should_sync` — иначе UI показывает
-        выключенный чекбокс при работающем синке, и первый же «Save» его вырубит."""
+        """The field default must match the default of `should_sync` — otherwise the UI shows
+        an unchecked box while the sync is on, and the very first "Save" kills it."""
         fields = {field["name"]: field for field in self.installation.get_organization_config()}
 
         assert set(fields) == {"sync_status_forward"}
@@ -62,7 +62,7 @@ class JagaSyncTest(APITestCase):
 
         sent = json.loads(responses.calls[-1].request.body)
         assert sent["taskId"] == 500
-        assert "закрыт" in sent["contentComment"].lower()
+        assert "resolved" in sent["contentComment"].lower()
 
     @responses.activate
     def test_sync_status_outbound_comments_on_regression(self) -> None:
@@ -76,7 +76,7 @@ class JagaSyncTest(APITestCase):
         import json
 
         sent = json.loads(responses.calls[-1].request.body)
-        assert "переоткрыт" in sent["contentComment"].lower()
+        assert "reopened" in sent["contentComment"].lower()
 
     @responses.activate
     def test_sync_status_outbound_resolves_task_id_by_code_when_missing(self) -> None:
@@ -96,7 +96,7 @@ class JagaSyncTest(APITestCase):
                 "statusTransitions": [],
                 "executors": [],
                 "timeInStatus": {},
-                "status": {"name": "В работе", "nameM": "in_progress"},
+                "status": {"name": "In progress", "nameM": "in_progress"},
                 "attributes": [],
             },
         )

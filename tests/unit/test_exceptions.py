@@ -23,14 +23,14 @@ from sentry_jaga.client.exceptions import (
     ],
 )
 def test_error_from_response_maps_status(status: int, expected: type[JagaApiError]) -> None:
-    err = error_from_response(status, {"message": "боль"})
+    err = error_from_response(status, {"message": "boom"})
     assert isinstance(err, expected)
     assert err.status_code == status
 
 
 def test_error_message_uses_body_message() -> None:
-    err = error_from_response(400, {"message": "Поле обязательно"})
-    assert "Поле обязательно" in str(err)
+    err = error_from_response(400, {"message": "This field is required"})
+    assert "This field is required" in str(err)
 
 
 def test_error_message_falls_back_when_body_unparseable() -> None:

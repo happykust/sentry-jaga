@@ -64,7 +64,7 @@ def test_falls_back_to_login_when_refresh_fails() -> None:
 
     def refresh(_refresh_token: str) -> Token:
         calls["refresh"] += 1
-        raise RuntimeError("refresh отклонён")
+        raise RuntimeError("refresh rejected")
 
     manager = TokenManager(
         login=login, refresh=refresh, cache=InMemoryCache(), cache_key="jaga:test"
@@ -90,7 +90,7 @@ def test_token_shared_via_cache_between_managers() -> None:
         calls["login"] += 1
         return _token("shared")
 
-    def refresh(_rt: str) -> Token:  # pragma: no cover - не вызывается
+    def refresh(_rt: str) -> Token:  # pragma: no cover - never called
         raise AssertionError
 
     first = TokenManager(login=login, refresh=refresh, cache=cache, cache_key="jaga:shared")
@@ -106,7 +106,7 @@ def test_token_shared_via_cache_between_managers() -> None:
     [
         pytest.param({"garbage": "no token here"}, id="missing-keys"),
         pytest.param(
-            {"access_token": "at", "refresh_token": "rt", "expires_at": "не-дата"},
+            {"access_token": "at", "refresh_token": "rt", "expires_at": "not-a-date"},
             id="unparsable-expires-at",
         ),
     ],
@@ -121,8 +121,8 @@ def test_corrupted_cache_entry_triggers_relogin(corrupted: dict[str, str]) -> No
         calls["login"] += 1
         return _token("fresh")
 
-    def refresh(_rt: str) -> Token:  # pragma: no cover - не должен вызываться
-        raise AssertionError("рефреш не должен вызываться на битой записи")
+    def refresh(_rt: str) -> Token:  # pragma: no cover - must never be called
+        raise AssertionError("refresh must not be called on a corrupted entry")
 
     manager = TokenManager(login=login, refresh=refresh, cache=cache, cache_key="jaga:test")
 

@@ -4,7 +4,7 @@ URL = "https://sentry.example.com/organizations/acme/issues/42/"
 
 
 def test_build_title_passes_group_title_through() -> None:
-    assert build_title("TypeError: неверный тип") == "TypeError: неверный тип"
+    assert build_title("TypeError: invalid type") == "TypeError: invalid type"
 
 
 def test_build_title_truncates_long_titles() -> None:

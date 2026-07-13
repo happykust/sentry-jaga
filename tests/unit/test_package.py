@@ -8,15 +8,15 @@ PYPROJECT = Path(__file__).resolve().parents[2] / "pyproject.toml"
 
 
 def test_package_exposes_version() -> None:
-    """`__version__` — не отдельный литерал, а версия установленного дистрибутива."""
+    """`__version__` is not a separate literal but the version of the installed dist."""
     assert sentry_jaga.__version__ == version("sentry-jaga")
 
 
 def test_version_has_single_source_of_truth() -> None:
-    """Метаданные дистрибутива обязаны сходиться с `[project] version` в pyproject.
+    """The distribution metadata must agree with `[project] version` in pyproject.
 
-    Держит инвариант «версия объявлена ровно в одном месте»: хардкод в `__init__.py`
-    или в метаданных, разъехавшийся с pyproject, здесь и всплывёт.
+    This holds the invariant "the version is declared in exactly one place": a hardcoded
+    value in `__init__.py` or in the metadata that drifted from pyproject surfaces here.
     """
     declared = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))["project"]["version"]
     assert sentry_jaga.__version__ == declared

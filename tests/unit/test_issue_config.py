@@ -17,15 +17,15 @@ from sentry_jaga.issue_config import (
     status_comment,
 )
 
-TITLE = Attribute(id=100, name="Название", object_type_name_m="task.title", required=True)
-DESCRIPTION = Attribute(id=101, name="Описание", object_type_name_m="task.content_data")
+TITLE = Attribute(id=100, name="Title", object_type_name_m="task.title", required=True)
+DESCRIPTION = Attribute(id=101, name="Description", object_type_name_m="task.content_data")
 PRIORITY = Attribute(
-    id=102, name="Приоритет", object_type_name_m="task.priority", dictionary_id=55, required=True
+    id=102, name="Priority", object_type_name_m="task.priority", dictionary_id=55, required=True
 )
 
 
 class FakeClient:
-    """Подставной JagaClient: те же методы, записывает вызовы."""
+    """A stand-in JagaClient: same methods, records the calls."""
 
     def __init__(
         self,
@@ -34,8 +34,8 @@ class FakeClient:
         attributes: list[Attribute] | None = None,
         task_types_by_project: dict[int, list[TaskType]] | None = None,
     ) -> None:
-        self._projects = projects if projects is not None else [Project(1, "Платформа", "PLT")]
-        self._task_types = task_types if task_types is not None else [TaskType(10, "Баг")]
+        self._projects = projects if projects is not None else [Project(1, "Platform", "PLT")]
+        self._task_types = task_types if task_types is not None else [TaskType(10, "Bug")]
         self._task_types_by_project = task_types_by_project
         self._attributes = attributes if attributes is not None else [TITLE, DESCRIPTION, PRIORITY]
         self.created: dict[str, Any] | None = None
@@ -56,7 +56,7 @@ class FakeClient:
         return self._attributes
 
     def get_dictionary_values(self, dictionary_id: int) -> list[tuple[str, str]]:
-        return [("1", "Высокий"), ("2", "Низкий")]
+        return [("1", "High"), ("2", "Low")]
 
     def create_task(
         self, project_id: int, task_type_id: int, attributes: list[dict[str, Any]]
@@ -73,13 +73,13 @@ class FakeClient:
             "id": 500,
             "code": code,
             "attributes": [
-                {"fieldId": 100, "value": "Падает логин", "objectTypeNameM": "task.title"}
+                {"fieldId": 100, "value": "Login is broken", "objectTypeNameM": "task.title"}
             ],
         }
 
     def search_tasks(self, project_id: int, text: str, *, size: int = 20) -> list[TaskRef]:
         self.searches.append((project_id, text))
-        return [TaskRef(id=5, code="PLT-5", title="Падает логин")]
+        return [TaskRef(id=5, code="PLT-5", title="Login is broken")]
 
     def create_comment(self, task_id: int, content: str) -> None:
         self.comments.append((task_id, content))
@@ -90,22 +90,22 @@ def _by_name(fields: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
 
 
 def test_create_config_builds_cascade() -> None:
-    fields = build_create_config(FakeClient(), {}, "Падает логин", "Sentry-issue: http://s/1")
+    fields = build_create_config(FakeClient(), {}, "Login is broken", "Sentry issue: http://s/1")
     by_name = _by_name(fields)
 
     assert by_name["project"]["updatesForm"] is True
-    assert by_name["project"]["choices"] == [("1", "Платформа (PLT)")]
+    assert by_name["project"]["choices"] == [("1", "Platform (PLT)")]
     assert by_name["issue_type"]["updatesForm"] is True
-    assert by_name["issue_type"]["choices"] == [("10", "Баг")]
-    assert by_name["attr_100"]["default"] == "Падает логин"
-    assert by_name["attr_101"]["default"] == "Sentry-issue: http://s/1"
-    assert by_name["attr_102"]["choices"] == [("1", "Высокий"), ("2", "Низкий")]
+    assert by_name["issue_type"]["choices"] == [("10", "Bug")]
+    assert by_name["attr_100"]["default"] == "Login is broken"
+    assert by_name["attr_101"]["default"] == "Sentry issue: http://s/1"
+    assert by_name["attr_102"]["choices"] == [("1", "High"), ("2", "Low")]
 
 
 def test_create_config_honours_selected_params() -> None:
     client = FakeClient(
-        projects=[Project(1, "Платформа", "PLT"), Project(2, "Биллинг", "BIL")],
-        task_types=[TaskType(10, "Баг"), TaskType(11, "Задача")],
+        projects=[Project(1, "Platform", "PLT"), Project(2, "Billing", "BIL")],
+        task_types=[TaskType(10, "Bug"), TaskType(11, "Task")],
     )
     fields = build_create_config(client, {"project": "2", "issue_type": "11"}, "t", "d")
     by_name = _by_name(fields)
@@ -115,34 +115,34 @@ def test_create_config_honours_selected_params() -> None:
 
 
 def test_create_config_drops_task_type_left_over_from_previous_project() -> None:
-    """Смена пространства при «залипшем» issue_type от прежнего.
+    """Switching the space while an `issue_type` from the previous one is still stuck.
 
-    Sentry при `updatesForm` пересылает ВСЕ поля формы, а не только изменённое: после
-    переключения `project` в `params` приезжает `issue_type` СТАРОГО пространства.
-    Принять его как есть — 404 от Яги либо, что хуже, тихо созданная задача чужого типа.
-    Ожидаем откат на первый тип нового пространства.
+    On `updatesForm`, Sentry resends EVERY form field, not only the one that changed: after
+    `project` is switched, `params` arrives carrying the `issue_type` of the OLD space.
+    Taking it at face value means a 404 from Jaga or, worse, a silently created task of a
+    foreign type. We expect a fall back to the first type of the new space.
     """
     client = FakeClient(
-        projects=[Project(1, "Платформа", "PLT"), Project(2, "Биллинг", "BIL")],
+        projects=[Project(1, "Platform", "PLT"), Project(2, "Billing", "BIL")],
         task_types_by_project={
-            1: [TaskType(10, "Баг"), TaskType(11, "Задача")],
-            2: [TaskType(20, "Инцидент"), TaskType(21, "Запрос")],
+            1: [TaskType(10, "Bug"), TaskType(11, "Task")],
+            2: [TaskType(20, "Incident"), TaskType(21, "Request")],
         },
     )
 
-    # Пользователь переключил пространство на 2, а issue_type=10 остался от пространства 1.
+    # The user switched the space to 2, while issue_type=10 is left over from space 1.
     fields = build_create_config(client, {"project": "2", "issue_type": "10"}, "t", "d")
     by_name = _by_name(fields)
 
     assert by_name["issue_type"]["default"] == "20"
-    assert by_name["issue_type"]["choices"] == [("20", "Инцидент"), ("21", "Запрос")]
-    # И атрибуты запрошены для типа НОВОГО пространства, а не для чужого.
+    assert by_name["issue_type"]["choices"] == [("20", "Incident"), ("21", "Request")]
+    # And the attributes were requested for the type of the NEW space, not a foreign one.
     assert client.attributes_requested == [(2, 20)]
 
 
 def test_create_config_falls_back_when_project_is_unknown() -> None:
-    """Пространство из params, которого больше нет в списке, не должно протекать дальше."""
-    client = FakeClient(projects=[Project(1, "Платформа", "PLT"), Project(2, "Биллинг", "BIL")])
+    """A space from params that is no longer in the list must not leak any further."""
+    client = FakeClient(projects=[Project(1, "Platform", "PLT"), Project(2, "Billing", "BIL")])
     by_name = _by_name(build_create_config(client, {"project": "999"}, "t", "d"))
 
     assert by_name["project"]["default"] == "1"
@@ -150,11 +150,11 @@ def test_create_config_falls_back_when_project_is_unknown() -> None:
 
 
 @pytest.mark.parametrize(
-    "junk", ["", "  ", "не-число", None], ids=["empty", "blank", "text", "none"]
+    "junk", ["", "  ", "not-a-number", None], ids=["empty", "blank", "text", "none"]
 )
 def test_create_config_ignores_unusable_project_param(junk: str | None) -> None:
-    """Пустое/нечисловое значение из формы не должно ронять каскад."""
-    client = FakeClient(projects=[Project(1, "Платформа", "PLT"), Project(2, "Биллинг", "BIL")])
+    """An empty or non-numeric value from the form must not break the cascade."""
+    client = FakeClient(projects=[Project(1, "Platform", "PLT"), Project(2, "Billing", "BIL")])
     by_name = _by_name(build_create_config(client, {"project": junk}, "t", "d"))
 
     assert by_name["project"]["default"] == "1"
@@ -177,14 +177,14 @@ def test_create_task_from_form_sends_attributes() -> None:
         {
             "project": "1",
             "issue_type": "10",
-            "attr_100": "Падает логин",
-            "attr_101": "тело",
+            "attr_100": "Login is broken",
+            "attr_101": "body",
             "attr_102": "1",
         },
     )
 
     assert result["key"] == "PLT-500"
-    assert result["title"] == "Падает логин"
+    assert result["title"] == "Login is broken"
     assert client.created is not None
     assert [a["fieldId"] for a in client.created["attributes"]] == [100, 101, 102]
     assert client.created["project_id"] == 1
@@ -197,29 +197,30 @@ def test_create_task_from_form_rejects_empty_form() -> None:
 
 
 def test_create_task_from_form_returns_task_id_in_metadata() -> None:
-    """`metadata` уезжает в `ExternalIssue`. Без `task_id` каждый resolve заново искал бы
-    задачу по коду — хотя id только что вернула сама Яга."""
+    """`metadata` travels into `ExternalIssue`. Without `task_id`, every resolve would look
+    the task up by code again — even though Jaga has just returned the id itself."""
     result = create_task_from_form(
-        FakeClient(), {"project": "1", "issue_type": "10", "attr_100": "Падает логин"}
+        FakeClient(), {"project": "1", "issue_type": "10", "attr_100": "Login is broken"}
     )
 
     assert result["metadata"] == {"task_id": 500}
 
 
 def test_created_task_needs_no_lookup_to_resolve_its_id() -> None:
-    """Сквозная проверка смысла I4: id созданной задачи разрешается без похода в Ягу."""
+    """End-to-end check of what I4 is for: the id of a created task resolves without a
+    round trip to Jaga."""
     client = FakeClient()
     created = create_task_from_form(
-        client, {"project": "1", "issue_type": "10", "attr_100": "Падает логин"}
+        client, {"project": "1", "issue_type": "10", "attr_100": "Login is broken"}
     )
 
     assert resolve_task_id(client, created["key"], created["metadata"]) == 500
 
 
 def test_warns_when_no_system_attribute_recognised(caplog: pytest.LogCaptureFixture) -> None:
-    """Мнемокоды task.title/task.content_data спекой Яги не подтверждены. Если ни один
-    системный атрибут не опознан — промах не должен деградировать молча."""
-    exotic = Attribute(id=200, name="Тема", object_type_name_m="task.subject_line")
+    """The task.title/task.content_data mnemonics are not confirmed by the Jaga spec. If not
+    a single system attribute is recognised, the miss must not degrade silently."""
+    exotic = Attribute(id=200, name="Subject", object_type_name_m="task.subject_line")
 
     with caplog.at_level(logging.WARNING, logger="sentry_jaga.issue_config"):
         build_create_config(FakeClient(attributes=[exotic]), {}, "t", "d")
@@ -237,11 +238,11 @@ def test_does_not_warn_when_system_attributes_are_present(
 
 
 def test_link_config_searches_when_query_given() -> None:
-    fields = build_link_config(FakeClient(), {"project": "1", "query": "логин"})
+    fields = build_link_config(FakeClient(), {"project": "1", "query": "login"})
     by_name = _by_name(fields)
 
     assert by_name["query"]["updatesForm"] is True
-    assert by_name["externalIssue"]["choices"] == [("PLT-5", "PLT-5 — Падает логин")]
+    assert by_name["externalIssue"]["choices"] == [("PLT-5", "PLT-5 — Login is broken")]
 
 
 def test_link_config_without_query_has_no_choices() -> None:
@@ -250,11 +251,11 @@ def test_link_config_without_query_has_no_choices() -> None:
 
 
 def test_link_config_does_not_search_below_min_query_length() -> None:
-    """`updatesForm` перезапрашивает конфиг на КАЖДОЕ нажатие клавиши, дебаунса у Sentry
-    нет, свой JS внешний пакет поставить не может. Минимальная длина запроса — единственный
-    серверный тормоз: короче `MIN_QUERY_LENGTH` в Ягу не ходим вообще."""
+    """`updatesForm` re-fetches the config on EVERY keystroke, Sentry has no debounce, and an
+    external package cannot ship its own JS. A minimum query length is the only server-side
+    brake: below `MIN_QUERY_LENGTH` we do not call Jaga at all."""
     client = FakeClient()
-    short = "л" * (MIN_QUERY_LENGTH - 1)
+    short = "l" * (MIN_QUERY_LENGTH - 1)
 
     by_name = _by_name(build_link_config(client, {"project": "1", "query": short}))
 
@@ -264,12 +265,12 @@ def test_link_config_does_not_search_below_min_query_length() -> None:
 
 def test_link_config_searches_from_min_query_length() -> None:
     client = FakeClient()
-    enough = "л" * MIN_QUERY_LENGTH
+    enough = "l" * MIN_QUERY_LENGTH
 
     by_name = _by_name(build_link_config(client, {"project": "1", "query": enough}))
 
     assert client.searches == [(1, enough)]
-    assert by_name["externalIssue"]["choices"] == [("PLT-5", "PLT-5 — Падает логин")]
+    assert by_name["externalIssue"]["choices"] == [("PLT-5", "PLT-5 — Login is broken")]
 
 
 def test_link_config_ignores_whitespace_only_query() -> None:
@@ -286,13 +287,13 @@ def test_link_config_help_states_the_minimum_query_length() -> None:
 def test_get_task_summary() -> None:
     summary = get_task_summary(FakeClient(), "PLT-500")
     assert summary["key"] == "PLT-500"
-    assert summary["title"] == "Падает логин"
+    assert summary["title"] == "Login is broken"
     assert summary["metadata"] == {"task_id": 500}
 
 
 def test_search_task_summaries() -> None:
-    assert search_task_summaries(FakeClient(), 1, "логин") == [
-        {"key": "PLT-5", "title": "Падает логин"}
+    assert search_task_summaries(FakeClient(), 1, "login") == [
+        {"key": "PLT-5", "title": "Login is broken"}
     ]
 
 
@@ -301,8 +302,8 @@ def test_search_task_summaries_without_query_is_empty() -> None:
 
 
 def test_status_comment_distinguishes_resolution() -> None:
-    assert "закрыт" in status_comment(is_resolved=True).lower()
-    assert "переоткрыт" in status_comment(is_resolved=False).lower()
+    assert "resolved" in status_comment(is_resolved=True).lower()
+    assert "reopened" in status_comment(is_resolved=False).lower()
 
 
 def test_resolve_task_id_prefers_metadata() -> None:

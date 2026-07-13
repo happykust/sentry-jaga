@@ -1,9 +1,10 @@
-"""Минимальные настройки Django для юнит-тестов.
+"""Minimal Django settings for the unit tests.
 
-В рантайме settings приходят от Sentry, но `sentry_jaga.pipeline` зависит только от
-`django.forms`. Импорт и `verify_credentials` работают и без settings, а вот
-`Form.is_valid()` дёргает переводы (USE_I18N) и падает на ImproperlyConfigured —
-поэтому конфигурируем Django минимально. Пакет `sentry` для этого не нужен.
+At runtime the settings come from Sentry, but `sentry_jaga.pipeline` only depends on
+`django.forms`. Importing it and calling `verify_credentials` works without settings,
+whereas `Form.is_valid()` reaches for translations (USE_I18N) and fails with
+ImproperlyConfigured — hence the minimal Django configuration. The `sentry` package is not
+needed for this.
 """
 
 from django.conf import settings

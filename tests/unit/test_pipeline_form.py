@@ -2,8 +2,8 @@ import pytest
 import responses
 from django.core.exceptions import ValidationError
 
-# Именно requests-овый ConnectionError, а не встроенный: сеть должна падать так,
-# как её видит requests (RequestException), — это и ловит verify_credentials.
+# The requests ConnectionError, not the builtin one: the network must fail the way
+# requests sees it (RequestException) — that is exactly what verify_credentials catches.
 from requests.exceptions import ConnectionError
 
 from sentry_jaga.pipeline import InstallationForm, verify_credentials
@@ -30,32 +30,32 @@ def test_verify_credentials_ok() -> None:
 @responses.activate
 def test_verify_credentials_rejects_bad_password() -> None:
     responses.add(
-        responses.POST, f"{API}/v1/auth/login", json={"message": "Неверный пароль"}, status=401
+        responses.POST, f"{API}/v1/auth/login", json={"message": "Invalid password"}, status=401
     )
-    with pytest.raises(ValidationError, match="учётные данные"):
+    with pytest.raises(ValidationError, match="rejected the credentials"):
         verify_credentials(BASE, "bot@example.com", "wrong")
 
 
 @responses.activate
 def test_verify_credentials_reports_unreachable_instance() -> None:
     responses.add(responses.POST, f"{API}/v1/auth/login", body=ConnectionError("no route"))
-    with pytest.raises(ValidationError, match="Не удалось подключиться"):
+    with pytest.raises(ValidationError, match="Could not connect to Jaga"):
         verify_credentials(BASE, "bot@example.com", "secret")
 
 
 @responses.activate
 def test_verify_credentials_reports_api_error() -> None:
-    """Яга доступна и учётка не отвергнута, но API ответил ошибкой — это не 401."""
+    """Jaga is reachable and the account was not rejected, but the API errored — not a 401."""
     responses.add(
-        responses.POST, f"{API}/v1/auth/login", json={"message": "Внутренняя ошибка"}, status=500
+        responses.POST, f"{API}/v1/auth/login", json={"message": "Internal error"}, status=500
     )
-    with pytest.raises(ValidationError, match="Яга вернула ошибку при входе"):
+    with pytest.raises(ValidationError, match="Jaga returned an error on login"):
         verify_credentials(BASE, "bot@example.com", "secret")
 
 
 @responses.activate
 def test_form_valid_when_jaga_accepts_credentials() -> None:
-    """Форма валидна только после того, как Яга подтвердила учётку живым логином."""
+    """The form is valid only once Jaga has confirmed the account with a live login."""
     responses.add(responses.POST, f"{API}/v1/auth/login", json=LOGIN_OK, status=200)
     form = InstallationForm(
         {"instance_url": BASE, "email": "bot@example.com", "password": "secret"}
@@ -67,11 +67,11 @@ def test_form_valid_when_jaga_accepts_credentials() -> None:
 
 @responses.activate
 def test_form_assumes_https_for_schemeless_url() -> None:
-    """Адрес без схемы достраивается до HTTPS, а не до HTTP.
+    """A schemeless address is completed to HTTPS, not to HTTP.
 
-    В Django 5.x (его везёт Sentry 26.3.1) `URLField` без `assume_scheme` подставляет
-    `http://`. Тогда пароль сервисного аккаунта уходит на верификацию открытым текстом,
-    а http-адрес навсегда оседает в `Integration.metadata`.
+    On Django 5.x (which is what Sentry 26.3.1 ships), a `URLField` without `assume_scheme`
+    substitutes `http://`. The service account password would then go out for verification
+    in plain text, and the http address would settle into `Integration.metadata` forever.
     """
     responses.add(responses.POST, f"{API}/v1/auth/login", json=LOGIN_OK, status=200)
     form = InstallationForm(
@@ -80,25 +80,26 @@ def test_form_assumes_https_for_schemeless_url() -> None:
 
     assert form.is_valid(), form.errors
     assert form.cleaned_data["instance_url"] == "https://jaga.example.com"
-    # И сам логин ушёл по HTTPS — пароль не покидает машину в открытом виде.
+    # And the login itself went over HTTPS — the password never leaves the box in the clear.
     assert [call.request.url for call in responses.calls] == [f"{API}/v1/auth/login"]
 
 
 @responses.activate
 def test_form_surfaces_rejection_by_jaga_as_form_error() -> None:
     responses.add(
-        responses.POST, f"{API}/v1/auth/login", json={"message": "Неверный пароль"}, status=401
+        responses.POST, f"{API}/v1/auth/login", json={"message": "Invalid password"}, status=401
     )
     form = InstallationForm({"instance_url": BASE, "email": "bot@example.com", "password": "wrong"})
 
-    # Именно dict(): str(form.errors) рендерит HTML и требует загруженных app-ов Django.
+    # dict() on purpose: str(form.errors) renders HTML and needs Django apps to be loaded.
     assert not form.is_valid()
-    assert "учётные данные" in dict(form.errors)["__all__"][0]
+    assert "rejected the credentials" in dict(form.errors)["__all__"][0]
 
 
 @responses.activate
 def test_form_does_not_call_jaga_when_a_field_is_missing() -> None:
-    """Без пароля проверять нечего — в Ягу не ходим (иначе шлём заведомо битый логин)."""
+    """Without a password there is nothing to check — do not call Jaga (that login is
+    known-broken up front)."""
     form = InstallationForm({"instance_url": BASE, "email": "bot@example.com"})
 
     assert not form.is_valid()

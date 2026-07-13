@@ -57,7 +57,10 @@ class JagaInstallationTest(IntegrationTestCase):
     @responses.activate
     def test_installation_rejects_bad_credentials(self) -> None:
         responses.add(
-            responses.POST, f"{API}/v1/auth/login", json={"message": "Неверный пароль"}, status=401
+            responses.POST,
+            f"{API}/v1/auth/login",
+            json={"message": "Invalid password"},
+            status=401,
         )
 
         resp = self.client.post(
@@ -71,7 +74,7 @@ class JagaInstallationTest(IntegrationTestCase):
     def test_get_client_uses_stored_metadata(self) -> None:
         integration = self.create_provider_integration(
             provider="jaga",
-            name="Яга",
+            name="Jaga",
             external_id=BASE,
             metadata={"instance_url": BASE, "email": "bot@example.com", "password": "secret"},
         )
