@@ -8,6 +8,7 @@ from typing import Any
 
 from sentry.integrations.mixins.issues import IssueSyncIntegration, ResolveSyncAction
 from sentry.integrations.models.external_issue import ExternalIssue
+from sentry.users.services.user import RpcUser
 
 from sentry_jaga import issue_config
 from sentry_jaga.client.exceptions import JagaError
@@ -63,6 +64,18 @@ class JagaSyncMixin(JagaIssuesMixin, IssueSyncIntegration):
                 extra={"key": external_issue.key},
                 exc_info=True,
             )
+
+    def sync_assignee_outbound(
+        self,
+        external_issue: ExternalIssue,
+        user: RpcUser | None,
+        assign: bool = True,
+        **kwargs: Any,
+    ) -> None:
+        # Абстрактный метод `IssueSyncIntegration`: без него класс остаётся абстрактным
+        # и Sentry не может создать инсталляцию. Синк ассайни не поддерживается
+        # (`outbound_assignee_key = None`, `should_sync` вернёт False), поэтому — no-op.
+        return None
 
     def get_resolve_sync_action(self, data: Mapping[str, Any]) -> ResolveSyncAction:
         # Входящие вебхуки Яга→Sentry в этой версии не поддерживаются.

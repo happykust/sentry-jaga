@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
 
@@ -56,6 +56,12 @@ class JagaIssuesMixin(IssueBasicIntegration):
 
     def make_external_key(self, data: dict[str, Any]) -> str:
         return str(data["key"])
+
+    def get_persisted_default_config_fields(self) -> Sequence[str]:
+        # Абстрактный метод `IssueBasicIntegration`: без него класс остаётся абстрактным
+        # и Sentry не может создать инсталляцию. Значения формы не персистим — каскад
+        # создания (`build_create_config`) не читает `get_defaults`.
+        return []
 
     def _defaults_from_group(self, group: Group | None) -> tuple[str, str]:
         """Предзаполнение названия и описания задачи данными Sentry-issue."""
