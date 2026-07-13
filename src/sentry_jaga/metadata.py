@@ -9,7 +9,6 @@ from sentry.integrations.base import (
 )
 
 REPO_URL = "https://github.com/happykust/sentry-jaga"
-JAGA_ICON_URL = f"{REPO_URL}/raw/main/docs/assets/jaga-logo.png"
 
 DESCRIPTION = """
 Интеграция с Ягой — таск-трекером Ростелекома.

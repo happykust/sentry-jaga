@@ -40,9 +40,14 @@ class JagaSyncTest(APITestCase):
     def test_should_sync_defaults_to_enabled(self) -> None:
         assert self.installation.should_sync("outbound_status") is True
 
-    def test_organization_config_exposes_toggles(self) -> None:
-        names = {field["name"] for field in self.installation.get_organization_config()}
-        assert {"sync_status_forward", "comment_on_resolve"} <= names
+    def test_organization_config_exposes_sync_toggle_enabled_by_default(self) -> None:
+        """Дефолт поля обязан совпадать с дефолтом `should_sync` — иначе UI показывает
+        выключенный чекбокс при работающем синке, и первый же «Save» его вырубит."""
+        fields = {field["name"]: field for field in self.installation.get_organization_config()}
+
+        assert set(fields) == {"sync_status_forward"}
+        assert fields["sync_status_forward"]["default"] is True
+        assert self.installation.should_sync("outbound_status") is True
 
     @responses.activate
     def test_sync_status_outbound_comments_on_resolve(self) -> None:

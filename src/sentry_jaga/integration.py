@@ -16,19 +16,19 @@ from sentry.integrations.pipeline import IntegrationPipeline
 from sentry.pipeline.views.base import PipelineView
 
 from sentry_jaga.client.api import JagaClient
-from sentry_jaga.metadata import JAGA_ICON_URL, JAGA_METADATA
+from sentry_jaga.metadata import JAGA_METADATA
 from sentry_jaga.pipeline import InstallationConfigView
 from sentry_jaga.sync import JagaSyncMixin
 
 
-class DjangoTokenCache:
-    """Адаптер Django cache под протокол TokenCache ядра."""
+class DjangoCache:
+    """Адаптер Django cache под протокол `Cache` ядра (токен + список пространств)."""
 
-    def get(self, key: str) -> dict[str, str] | None:
+    def get(self, key: str) -> dict[str, Any] | None:
         value = django_cache.get(key)
         return value if isinstance(value, dict) else None
 
-    def set(self, key: str, value: dict[str, str], timeout: int) -> None:
+    def set(self, key: str, value: dict[str, Any], timeout: int) -> None:
         django_cache.set(key, value, timeout=timeout)
 
     def delete(self, key: str) -> None:
@@ -44,8 +44,25 @@ class JagaIntegration(JagaSyncMixin, IntegrationInstallation):
             instance_url=metadata["instance_url"],
             email=metadata["email"],
             password=metadata["password"],
-            cache=DjangoTokenCache(),
+            cache=DjangoCache(),
         )
+
+
+def _assert_concrete(cls: type[IntegrationInstallation]) -> None:
+    """Гейт конкретности `JagaIntegration` — единственная защита слоя Sentry.
+
+    Слой Sentry не покрывается тестами (пакета `sentry` в юнит-прогоне нет), его держит
+    mypy против исходников Sentry. Но `integration_cls: type[IntegrationInstallation] | None`
+    в `IntegrationProvider` — не `type[T]`-параметр, и mypy НЕ проверяет `type-abstract`
+    при присваивании: класс, потерявший реализацию абстрактного метода Sentry, проезжал
+    гейт молча (регрессия, которую чинил a16d2db) и падал уже в рантайме.
+
+    Передача класса в `type[IntegrationInstallation]`-параметр такую проверку включает:
+    забытый абстрактный метод → ошибка `[type-abstract]` в CI-джобе «Типы против API Sentry».
+    """
+
+
+_assert_concrete(JagaIntegration)
 
 
 class JagaIntegrationProvider(IntegrationProvider):
@@ -64,10 +81,11 @@ class JagaIntegrationProvider(IntegrationProvider):
         return {
             "external_id": instance_url,
             "name": f"Яга ({instance_url})",
+            # `icon` намеренно не указан: файла логотипа в репозитории пока нет, а битая
+            # ссылка на GitHub из изолированного контура хуже generic-иконки Sentry.
             "metadata": {
                 "instance_url": instance_url,
                 "email": data["email"],
                 "password": data["password"],
-                "icon": JAGA_ICON_URL,
             },
         }

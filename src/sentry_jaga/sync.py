@@ -33,18 +33,16 @@ class JagaSyncMixin(JagaIssuesMixin, IssueSyncIntegration):
         return bool(config.get("sync_status_forward", True))
 
     def get_organization_config(self) -> Sequence[Any]:
+        # `default` обязателен: `get_config_data()` до первого сохранения возвращает {},
+        # и без него чекбокс отрендерится выключенным, хотя синк по факту включён
+        # (см. `should_sync`). Первый же «Save» отправил бы false и молча вырубил синк.
         return [
             {
                 "name": "sync_status_forward",
                 "type": "boolean",
                 "label": "Синхронизировать статус в Ягу",
                 "help": "Отражать закрытие и переоткрытие Sentry-issue в связанной задаче Яги.",
-            },
-            {
-                "name": "comment_on_resolve",
-                "type": "boolean",
-                "label": "Комментировать задачу",
-                "help": "Добавлять комментарий в задачу Яги при смене статуса Sentry-issue.",
+                "default": True,
             },
         ]
 
