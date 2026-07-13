@@ -42,16 +42,27 @@ class InstallationForm(forms.Form):
     instance_url = forms.URLField(
         label="Jaga URL",
         assume_scheme="https",
-        help_text="Base URL of the Jaga instance, for example https://jaga.example.com",
+        help_text=(
+            "Base address of your Jaga instance, without a path — for example "
+            "https://jaga.example.com. Sentry appends the API prefix itself."
+        ),
         widget=forms.TextInput(attrs={"placeholder": "https://jaga.example.com"}),
     )
     email = forms.EmailField(
         label="Service account email",
-        help_text="The account Sentry will use to act in Jaga.",
+        help_text=(
+            "The Jaga account Sentry acts on behalf of. It must be a member of every space "
+            "you want to file tasks into."
+        ),
+        widget=forms.TextInput(attrs={"placeholder": "sentry-bot@example.com"}),
     )
     password = forms.CharField(
         label="Service account password",
-        widget=forms.PasswordInput(),
+        help_text=(
+            "Stored by Sentry so it can call Jaga later. The credentials are verified against "
+            "Jaga before the integration is created."
+        ),
+        widget=forms.PasswordInput(render_value=False),
     )
 
     def clean(self) -> dict[str, Any]:

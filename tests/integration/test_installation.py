@@ -35,6 +35,23 @@ AUTH_OK = {
 class JagaInstallationTest(IntegrationTestCase):
     provider = JagaIntegrationProvider
 
+    def test_setup_form_renders_fields_through_crispy(self) -> None:
+        """The setup page renders every field, its help text and the service-account notice.
+
+        A bare `assert status_code == 200` would still pass if `{% load crispy_forms_tags %}`
+        silently produced nothing — crispy is Sentry's, not ours, and the template only works
+        because Sentry ships django-crispy-forms (Jira Server's setup page uses it too).
+        """
+        resp = self.client.get(self.init_path)
+        assert resp.status_code == 200
+        html = resp.content.decode()
+
+        for field in ("instance_url", "email", "password"):
+            assert f'name="{field}"' in html, f"{field} was not rendered"
+        # A help text from the form and the alert block from the template.
+        assert "Sentry appends the API prefix itself" in html
+        assert "service account" in html
+
     @responses.activate
     def test_installation_creates_integration(self) -> None:
         responses.add(responses.POST, f"{API}/v1/auth/login", json=AUTH_OK, status=200)

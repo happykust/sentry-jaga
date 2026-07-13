@@ -21,6 +21,20 @@ LOGIN_OK = {
 }
 
 
+def test_form_fields_are_documented_for_the_installer() -> None:
+    """Every field carries a label and help text — the setup form renders them via crispy.
+
+    The template (`sentry_jaga/config.html`) shows nothing but the fields themselves, so an
+    undocumented field leaves the admin guessing what to type into it.
+    """
+    form = InstallationForm()
+
+    assert list(form.fields) == ["instance_url", "email", "password"]
+    for name, field in form.fields.items():
+        assert field.label, f"{name} has no label"
+        assert field.help_text, f"{name} has no help text"
+
+
 @responses.activate
 def test_verify_credentials_ok() -> None:
     responses.add(responses.POST, f"{API}/v1/auth/login", json=LOGIN_OK, status=200)

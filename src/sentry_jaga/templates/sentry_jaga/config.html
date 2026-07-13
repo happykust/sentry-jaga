@@ -1,19 +1,61 @@
 {% extends "sentry/bases/modal.html" %}
+{% load crispy_forms_tags %}
 {% load i18n %}
 
-{% block title %}Connect Jaga | {{ block.super }}{% endblock %}
+{% block css %}
+  <style>
+    .jaga-note ul {
+      margin: 5px 0 0 20px;
+    }
+    .jaga-note li {
+      font-size: 90%;
+    }
+  </style>
+{% endblock %}
+
+{% block wrapperclass %} narrow auth {% endblock %}
+{% block modal_header_signout %} {% endblock %}
+
+{% block title %} {% trans "Jaga Setup" %} | {{ block.super }} {% endblock %}
 
 {% block main %}
-  <h3>Connect Jaga</h3>
+  <h3>{% trans "Connect Sentry with Jaga" %}</h3>
   <p>
-    Enter the URL of your Jaga instance and the credentials of a service account.
-    Sentry will create tasks and comments on its behalf.
+    {% blocktrans %}
+    Point Sentry at your Jaga instance and give it an account to work with. Once connected,
+    you can create Jaga tasks straight from a Sentry issue, link existing tasks, and have the
+    task commented on when the issue is resolved.
+    {% endblocktrans %}
   </p>
-  <form action="" method="POST">
+
+  <p class="alert alert-block flex">
+    <i class="icon icon-exclamation"></i>
+    <span class="jaga-note">
+      {% blocktrans %}
+      Use a dedicated <strong>service account</strong> rather than a personal one. Sentry acts
+      in Jaga entirely on its behalf: every task and every comment this integration creates
+      will be authored by that account.
+      {% endblocktrans %}
+      <ul>
+        <li>{% trans "It must be a member of every Jaga space you want to file tasks into — spaces it cannot reach will not be offered." %}</li>
+        <li>{% trans "Its password is stored by Sentry, which needs it to call Jaga later on." %}</li>
+      </ul>
+    </span>
+  </p>
+
+  <form action="" method="post" class="form-stacked">
     {% csrf_token %}
-    {{ form.as_p }}
-    <div class="form-actions">
-      <button type="submit" class="btn btn-primary">Connect</button>
-    </div>
+
+    {{ form|as_crispy_errors }}
+
+    {% for field in form %}
+      {{ field|as_crispy_field }}
+    {% endfor %}
+
+    <fieldset class="form-actions clearfix">
+      <div class="pull-right">
+        <button type="submit" class="btn btn-primary">{% trans "Connect" %}</button>
+      </div>
+    </fieldset>
   </form>
 {% endblock %}
