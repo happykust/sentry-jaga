@@ -1,0 +1,19 @@
+{% extends "sentry/bases/modal.html" %}
+{% load i18n %}
+
+{% block title %}Подключение Яги | {{ block.super }}{% endblock %}
+
+{% block main %}
+  <h3>Подключение Яги</h3>
+  <p>
+    Укажите адрес инсталляции Яги и учётные данные сервисного аккаунта.
+    Sentry будет создавать задачи и комментарии от его имени.
+  </p>
+  <form action="" method="POST">
+    {% csrf_token %}
+    {{ form.as_p }}
+    <div class="form-actions">
+      <button type="submit" class="btn btn-primary">Подключить</button>
+    </div>
+  </form>
+{% endblock %}

@@ -2967,6 +2967,7 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "django" },
     { name = "mypy" },
     { name = "pre-commit" },
     { name = "pytest" },
@@ -2984,6 +2985,7 @@ requires-dist = [{ name = "requests", specifier = ">=2.31" }]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "django", specifier = ">=5.2.11" },
     { name = "mypy", specifier = ">=1.11" },
     { name = "pre-commit", specifier = ">=3.8" },
     { name = "pytest", specifier = ">=8.0" },
