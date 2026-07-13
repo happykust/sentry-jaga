@@ -1,25 +1,24 @@
 ---
-name: Предложение
-about: Предложить новую возможность или улучшение
+name: Feature request
+about: Suggest a new feature or an improvement
 title: ''
 labels: enhancement
 assignees: ''
 ---
 
-## Проблема
+## Problem
 
-Какую задачу вы пытаетесь решить и что сейчас мешает. Если предложение связано с
-конкретным сценарием работы с Ягой — опишите его.
+What are you trying to do, and what is getting in the way. If the request relates to a
+specific workflow in Jaga, describe it.
 
-## Предлагаемое решение
+## Proposed solution
 
-Как, по-вашему, это должно работать.
+How you think it should work.
 
-## Альтернативы
+## Alternatives
 
-Какие ещё варианты вы рассматривали и почему они хуже.
+What other options you considered, and why they are worse.
 
-## Дополнительно
+## Anything else
 
-Ссылки на документацию Яги, примеры из других интеграций Sentry, что угодно
-полезное.
+Links to the Jaga documentation, examples from other Sentry integrations, anything useful.

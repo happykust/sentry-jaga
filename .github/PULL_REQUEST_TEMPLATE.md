@@ -1,19 +1,19 @@
-## Что меняется
+## What changes
 
-Короткое описание изменения и зачем оно нужно.
+A short description of the change and why it is needed.
 
 Closes #
 
-## Чеклист
+## Checklist
 
-- [ ] Добавлены тесты на изменение поведения.
-- [ ] `uv run ruff check . && uv run ruff format --check .` — зелёные.
-- [ ] `uv run mypy` — зелёный.
-- [ ] `uv run pytest tests/unit` — зелёные (при изменениях в слое Sentry —
-      также `uv run pytest tests/integration` с `uv sync --group sentry`).
-- [ ] Обновлён `CHANGELOG.md` (секция `[Unreleased]`).
-- [ ] Обновлена документация, если менялось поведение для пользователя.
+- [ ] Tests added for the behaviour change.
+- [ ] `uv run ruff check . && uv run ruff format --check .` — green.
+- [ ] `uv run mypy` — green.
+- [ ] `uv run pytest tests/unit` — green (for changes in the Sentry layer, also
+      `uv run pytest tests/integration` with `uv sync --group sentry`).
+- [ ] `CHANGELOG.md` updated (the `[Unreleased]` section).
+- [ ] Documentation updated, if user-facing behaviour changed.
 
-## Примечания для ревьюера
+## Notes for the reviewer
 
-Что стоит посмотреть в первую очередь, известные компромиссы, открытые вопросы.
+What to look at first, known trade-offs, open questions.

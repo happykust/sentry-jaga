@@ -5,38 +5,38 @@
 [![Python](https://img.shields.io/pypi/pyversions/sentry-jaga.svg)](https://pypi.org/project/sentry-jaga/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-Интеграция self-hosted Sentry с таск-трекером **Яга** (Ростелеком).
+Integration between self-hosted Sentry and **Jaga**, the issue tracker by Rostelecom.
 
-Пакет добавляет в Sentry провайдер интеграции: из карточки issue можно завести
-задачу в Яге или привязать существующую, а изменение статуса issue уезжает в
-задачу комментарием.
+The package adds an integration provider to Sentry: from an issue you can open a task in
+Jaga or link an existing one, and a change of the issue status is posted to the task as a
+comment.
 
-## Возможности
+## Features
 
-- **Создание задачи в Яге из Sentry-issue** с полным набором атрибутов выбранного
-  типа задачи. У Яги EAV-модель — набор полей зависит от пары «пространство + тип
-  задачи», поэтому форма создания строится динамически и перерисовывается по мере
-  того, как вы выбираете пространство и тип.
-- **Привязка существующей задачи Яги** к Sentry-issue по коду задачи, с поиском по
-  названию и коду.
-- **Комментарий в задачу** при закрытии и переоткрытии Sentry-issue.
+- **Create a Jaga task from a Sentry issue**, with the full set of attributes of the chosen
+  task type. Jaga uses an EAV model — the set of fields depends on the pair
+  "space + task type" — so the create form is built dynamically and redrawn as you pick a
+  space and a type.
+- **Link an existing Jaga task** to a Sentry issue by task code, with search by title and
+  code.
+- **A comment on the task** when a Sentry issue is resolved or reopened.
 
-## Совместимость
+## Compatibility
 
 | sentry-jaga | Sentry   | Python |
 |-------------|----------|--------|
 | 0.1.x       | 26.3.x   | ≥ 3.13 |
 
-## Установка
+## Installation
 
-1. Установите пакет в окружение вашего Sentry (в образ или virtualenv, из которого
-   запускаются `web` и `worker`):
+1. Install the package into the environment of your Sentry (into the image, or into the
+   virtualenv that `web` and `worker` run from):
 
    ```bash
    pip install sentry-jaga
    ```
 
-2. Зарегистрируйте провайдер в `sentry.conf.py`:
+2. Register the provider in `sentry.conf.py`:
 
    ```python
    SENTRY_DEFAULT_INTEGRATIONS = (
@@ -45,69 +45,68 @@
    )
    ```
 
-3. Перезапустите Sentry — и `web`, и `worker`.
+3. Restart Sentry — both `web` and `worker`.
 
-## Настройка
+## Configuration
 
-Organization Settings → Integrations → **Яга** → Install. В форме укажите адрес
-Яги, email и пароль сервисного аккаунта. При установке выполняется пробный вход,
-поэтому неверные учётные данные вы увидите сразу.
+Organization Settings → Integrations → **Jaga** → Install. In the form, enter the Jaga URL
+and the email and password of a service account. A test login is performed during
+installation, so invalid credentials show up right away.
 
-Учётные данные хранятся в зашифрованном поле `Integration.metadata` Sentry.
-Заводите под интеграцию **отдельный сервисный аккаунт** с доступом только к тем
-пространствам, в которых нужно создавать задачи: все задачи и комментарии будут
-создаваться от его имени.
+The credentials are stored in Sentry's encrypted `Integration.metadata` field. Create a
+**dedicated service account** for the integration, with access only to the spaces you need
+to create tasks in: every task and comment will be created on its behalf.
 
-## Как это работает
+## How it works
 
-Интеграция ходит в REST API Яги от имени сервисного аккаунта: ленивый вход
-(`POST /v1/auth/login`), обновление токена по истечении (`POST /v1/auth/refresh`),
-токен кэшируется в Django-кэше Sentry.
+The integration talks to Jaga's REST API as the service account: a lazy login
+(`POST /v1/auth/login`), a token renewal on expiry (`POST /v1/auth/refresh`), and the token
+is cached in Sentry's Django cache.
 
-- **Создание.** Форма собирается каскадом: пространства (`GET /v1/project/list/my`,
-  список кэшируется на 60 секунд) → типы задач (`GET /v1/project/{projectId}/taskType`)
-  → атрибуты выбранного типа (`GET /v1/project/{projectId}/taskType/{taskTypeId}`),
-  из которых рендерятся поля формы. Submit создаёт задачу через
+- **Create.** The form is built as a cascade: spaces (`GET /v1/project/list/my`, the list is
+  cached for 60 seconds) → task types (`GET /v1/project/{projectId}/taskType`) → the
+  attributes of the chosen type (`GET /v1/project/{projectId}/taskType/{taskTypeId}`), which
+  are rendered as form fields. Submitting creates the task through
   `POST /v1/task/createByTaskType/{projectId}/{taskTypeId}`.
-- **Привязка.** Поиск задачи по названию или коду (`GET /v1/task/searchByTitleCode`,
-  начиная с 3 символов запроса), затем задача разрешается по коду
+- **Link.** A task is searched by title or code (`GET /v1/task/searchByTitleCode`, starting
+  from 3 characters of the query), then resolved by code
   (`GET /v1/task/findExtendedWithFlexField/code/{taskCode}`).
-- **Синхронизация статуса.** При закрытии или переоткрытии Sentry-issue в связанную
-  задачу отправляется комментарий (`POST /v1/comment`).
+- **Status sync.** When a Sentry issue is resolved or reopened, a comment is posted to the
+  linked task (`POST /v1/comment`).
 
-Связь issue ↔ задача хранят штатные модели Sentry (`ExternalIssue` и `GroupLink`) —
-пакет не заводит собственных таблиц.
+The issue ↔ task relation is held by Sentry's own models (`ExternalIssue` and `GroupLink`) —
+the package creates no tables of its own.
 
-## Ограничения
+## Limitations
 
-- **Синхронизация односторонняя, Sentry → Яга.** Входящие вебхуки Яга → Sentry не
-  поддерживаются: изменения на стороне Яги в Sentry не приезжают.
-- **Нет live-autocomplete при линковке.** Поиск задачи выполняется через обновление
-  формы, а не подсказками по мере ввода: внешний пакет не может зарегистрировать
-  search-endpoint в urlconf Sentry.
+- **The sync is one-way, Sentry → Jaga.** Inbound Jaga → Sentry webhooks are not supported:
+  changes made on the Jaga side do not reach Sentry.
+- **No live autocomplete when linking.** A task is searched by refreshing the form rather
+  than by suggestions as you type: an external package cannot register a search endpoint in
+  Sentry's urlconf.
 
-## Разработка
+## Development
 
-Пакетный менеджер — [uv](https://docs.astral.sh/uv/).
+The package manager is [uv](https://docs.astral.sh/uv/).
 
 ```bash
-uv sync                       # окружение Python 3.13 + dev-зависимости
-uv run pytest tests/unit      # тесты ядра — sentry НЕ нужен
+uv sync                       # Python 3.13 environment + dev dependencies
+uv run pytest tests/unit      # core tests — sentry is NOT needed
 uv run ruff check . && uv run mypy
 ```
 
-Тесты слоя Sentry требуют самого Sentry. **Его нет в PyPI** (пакет `sentry` там
-заморожен на 23.7.1), поэтому он ставится из исходников отдельной группой:
+The tests of the Sentry layer need Sentry itself. **It is not on PyPI** (the `sentry`
+package there is frozen at 23.7.1), so it is installed from source as a separate group:
 
 ```bash
-uv sync --group sentry            # ~157 зависимостей, долго
+uv sync --group sentry            # ~157 dependencies, slow
 uv run pytest tests/integration
 ```
 
-Без этой группы тесты в `tests/integration/` автоматически скипаются.
+Without that group, the tests in `tests/integration/` are skipped automatically.
 
-Как присылать изменения — в [CONTRIBUTING.md](CONTRIBUTING.md).
+How to submit changes: see [CONTRIBUTING.md](CONTRIBUTING.md).
 
-## Лицензия
+## License
 
-MIT — см. [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE).

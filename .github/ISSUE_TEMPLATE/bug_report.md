@@ -1,43 +1,44 @@
 ---
-name: Баг-репорт
-about: Сообщить об ошибке в sentry-jaga
+name: Bug report
+about: Report a bug in sentry-jaga
 title: ''
 labels: bug
 assignees: ''
 ---
 
-## Версии
+## Versions
 
 - sentry-jaga:
 - Sentry:
 - Python:
 
-## Что происходит
+## What happens
 
-Короткое описание проблемы.
+A short description of the problem.
 
-## Шаги воспроизведения
+## Steps to reproduce
 
 1.
 2.
 3.
 
-## Ожидаемое поведение
+## Expected behaviour
 
-Что должно было произойти.
+What should have happened.
 
-## Фактическое поведение
+## Actual behaviour
 
-Что произошло на самом деле.
+What actually happened.
 
-## Логи
+## Logs
 
-Трейсбек или логи `web`/`worker` Sentry. **Уберите пароли, токены и адреса Яги.**
+The traceback, or the logs of Sentry's `web`/`worker`. **Strip out passwords, tokens and
+Jaga URLs.**
 
 ```
 ```
 
-## Дополнительно
+## Anything else
 
-Всё остальное, что может помочь: конфигурация, особенности типа задачи в Яге,
-скриншоты формы.
+Whatever else may help: your configuration, the specifics of the task type in Jaga,
+screenshots of the form.

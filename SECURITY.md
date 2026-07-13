@@ -1,73 +1,73 @@
-# Политика безопасности
+# Security policy
 
-## Поддерживаемые версии
+## Supported versions
 
-Исправления безопасности выходят для последней минорной версии.
+Security fixes are released for the latest minor version.
 
-| Версия | Поддерживается |
-|--------|----------------|
-| 0.1.x  | ✅              |
-| < 0.1  | ❌              |
+| Version | Supported |
+|---------|-----------|
+| 0.1.x   | ✅         |
+| < 0.1   | ❌         |
 
-## Как сообщить об уязвимости
+## Reporting a vulnerability
 
-**Не заводите публичный issue.**
+**Do not open a public issue.**
 
-Откройте приватный отчёт через GitHub: вкладка
+File a private report through GitHub: the
 [Security → Report a vulnerability](https://github.com/happykust/sentry-jaga/security/advisories/new)
-в репозитории. Если GitHub недоступен, напишите на `lhappykust@gmail.com`.
+tab of the repository. If GitHub is unavailable, email `lhappykust@gmail.com`.
 
-Что полезно приложить:
+Useful things to include:
 
-- версии `sentry-jaga`, Sentry и Python;
-- описание уязвимости и то, к чему она приводит;
-- шаги воспроизведения или proof-of-concept.
+- the versions of `sentry-jaga`, Sentry and Python;
+- a description of the vulnerability and what it leads to;
+- steps to reproduce, or a proof of concept.
 
-## Сроки
+## Timelines
 
-- Первый ответ — в течение **72 часов**.
-- Оценка и план исправления — в течение **7 дней** с момента подтверждения.
-- Исправление и публикация advisory — по договорённости, обычно вместе с
-  ближайшим релизом; о ходе работ мы держим вас в курсе.
+- First response — within **72 hours**.
+- Assessment and a fix plan — within **7 days** of confirmation.
+- The fix and the advisory — by agreement, usually together with the next release; we will
+  keep you posted along the way.
 
-Пожалуйста, не раскрывайте детали публично, пока исправление не выпущено.
+Please do not disclose the details publicly until a fix has been released.
 
-## Как интеграция обращается с секретами
+## How the integration handles secrets
 
-- Учётные данные сервисного аккаунта Яги (адрес, email, пароль) хранятся в
-  зашифрованном поле `Integration.metadata` Sentry — как и у остальных интеграций
-  Sentry. Отдельного хранилища пакет не заводит.
-- Токен доступа кэшируется в Django-кэше Sentry и обновляется по истечении срока.
-- Пароль и токены не пишутся в логи и не возвращаются в UI.
+- The Jaga service account credentials (URL, email, password) are stored in Sentry's
+  encrypted `Integration.metadata` field — the same as for every other Sentry integration.
+  The package sets up no storage of its own.
+- The access token is cached in Sentry's Django cache and renewed when it expires.
+- The password and the tokens are never written to the logs and never returned to the UI.
 
-Всё, что защищает эти данные на диске, — это конфигурация вашего self-hosted
-Sentry (`SENTRY_OPTIONS["system.secret-key"]`, доступ к БД и к кэшу). Заводите под
-интеграцию отдельный сервисный аккаунт с минимально необходимыми правами.
+Everything that protects this data at rest is the configuration of your self-hosted Sentry
+(`SENTRY_OPTIONS["system.secret-key"]`, access to the database and to the cache). Create a
+dedicated service account for the integration, with the minimum rights it needs.
 
-## Исходящие запросы идут в обход SSRF-защиты Sentry
+## Outbound requests bypass Sentry's SSRF protection
 
-Клиент Яги ходит обычным `requests.Session`, а не через `ApiClient` Sentry. Это
-осознанная плата за изоляцию ядра: вся логика пакета живёт без импорта `sentry` и
-благодаря этому покрыта тестами без его тестового стека. Следствие:
+The Jaga client uses a plain `requests.Session` rather than Sentry's `ApiClient`. That is a
+deliberate price paid for the isolation of the core: all of the package's logic lives
+without importing `sentry` and is therefore covered by tests that do not need its test
+stack. The consequences:
 
-- **блок-лист исходящих адресов Sentry** (`SENTRY_DISALLOWED_IPS`, защита от SSRF)
-  **к этим запросам не применяется**;
-- интеграция обращается ровно по тому адресу, который администратор ввёл в форме
-  установки, — включая адреса во внутренней сети, `localhost` и link-local
-  (`169.254.169.254` и прочие метадата-сервисы облаков);
-- адрес попадает в `Integration.metadata` и переиспользуется всеми последующими
-  запросами интеграции.
+- **Sentry's outbound block list** (`SENTRY_DISALLOWED_IPS`, its SSRF protection) **is not
+  applied to these requests**;
+- the integration calls exactly the address the administrator typed into the installation
+  form — including addresses on the internal network, `localhost` and link-local ones
+  (`169.254.169.254` and other cloud metadata services);
+- that address lands in `Integration.metadata` and is reused by every subsequent request the
+  integration makes.
 
-Практический смысл: установка интеграции — это привилегированное действие. Право
-устанавливать интеграции в организации фактически даёт возможность заставить
-Sentry сходить POST-запросом по произвольному адресу (тело — логин сервисного
-аккаунта). Поэтому:
+What this means in practice: installing an integration is a privileged action. The right to
+install integrations in an organization effectively grants the ability to make Sentry send a
+POST request to an arbitrary address (with a service account login as the body). Therefore:
 
-- **указывайте только доверенный адрес вашей инсталляции Яги**;
-- держите право на установку интеграций за администраторами организации;
-- если ваш периметр требует строгого контроля исходящего трафика, ограничьте его
-  на сетевом уровне (egress-политика воркеров Sentry), а не рассчитывайте на
-  фильтрацию внутри пакета.
+- **only ever point it at the trusted address of your Jaga instance**;
+- keep the right to install integrations with the organization's administrators;
+- if your perimeter requires strict control of outbound traffic, enforce it at the network
+  level (an egress policy for the Sentry workers) instead of relying on filtering inside the
+  package.
 
-Мы считаем это известным и принятым ограничением, а не уязвимостью; сообщать о нём
-отдельно не нужно.
+We consider this a known and accepted limitation rather than a vulnerability; there is no
+need to report it separately.
