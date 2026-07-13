@@ -16,9 +16,9 @@ from sentry.integrations.pipeline import IntegrationPipeline
 from sentry.pipeline.views.base import PipelineView
 
 from sentry_jaga.client.api import JagaClient
-from sentry_jaga.issues import JagaIssuesMixin
 from sentry_jaga.metadata import JAGA_ICON_URL, JAGA_METADATA
 from sentry_jaga.pipeline import InstallationConfigView
+from sentry_jaga.sync import JagaSyncMixin
 
 
 class DjangoTokenCache:
@@ -35,7 +35,7 @@ class DjangoTokenCache:
         django_cache.delete(key)
 
 
-class JagaIntegration(JagaIssuesMixin, IntegrationInstallation):
+class JagaIntegration(JagaSyncMixin, IntegrationInstallation):
     """Инсталляция интеграции для конкретной организации."""
 
     def get_client(self) -> JagaClient:
