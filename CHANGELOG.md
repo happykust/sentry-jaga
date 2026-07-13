@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Changed
 
 - The project is now fully in English: documentation, code comments and user-facing strings.
+- The tests of the Sentry layer now actually run against a real Sentry 26.3.1 (in Sentry's own
+  environment — see CONTRIBUTING.md). The `sentry` dependency group is gone: it could never
+  have worked, as Sentry is not installable as a package.
 
 ## [0.1.0] - 2026-06-25
 

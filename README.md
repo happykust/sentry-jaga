@@ -119,15 +119,11 @@ uv run pytest tests/unit      # core tests — sentry is NOT needed
 uv run ruff check . && uv run mypy
 ```
 
-The tests of the Sentry layer need Sentry itself. **It is not on PyPI** (the `sentry`
-package there is frozen at 23.7.1), so it is installed from source as a separate group:
-
-```bash
-uv sync --group sentry            # ~157 dependencies, slow
-uv run pytest tests/integration
-```
-
-Without that group, the tests in `tests/integration/` are skipped automatically.
+The tests in `tests/integration/` exercise the integration against a real Sentry. They skip
+themselves here, and cannot run in this environment at all: Sentry is **not installable as a
+package** (not on PyPI above 23.7.1, and its source tree has no build backend). They run inside
+Sentry's own environment instead — four containers and a checkout of the tag, see
+[CONTRIBUTING.md](CONTRIBUTING.md#tests-of-the-sentry-layer).
 
 How to submit changes: see [CONTRIBUTING.md](CONTRIBUTING.md).
 
