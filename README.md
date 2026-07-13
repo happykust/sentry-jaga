@@ -30,7 +30,7 @@ comment.
 ## Installation
 
 1. Install the package into the environment of your Sentry (into the image, or into the
-   virtualenv that `web` and `worker` run from):
+   virtualenv the `web` and `taskworker` processes run from):
 
    ```bash
    pip install sentry-jaga
@@ -45,7 +45,12 @@ comment.
    )
    ```
 
-3. Restart Sentry — both `web` and `worker`.
+3. Restart Sentry — the `web` process **and the one that runs background tasks**.
+
+   The status sync (the comment posted to the Jaga task when a Sentry issue is resolved) runs
+   as a background task, so it will silently do nothing if only `web` is restarted. Note that
+   Sentry 26.3 no longer uses Celery: `sentry run worker` has been removed in favour of
+   `sentry run taskworker`.
 
 ## Configuration
 
