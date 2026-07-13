@@ -540,6 +540,45 @@ def test_link_config_help_states_the_minimum_query_length() -> None:
     assert str(MIN_QUERY_LENGTH) in by_name["query"]["help"]
 
 
+# --- the two shapes of the link form: with and without the search endpoint ---------------
+
+
+def test_link_config_with_a_search_url_builds_an_async_select() -> None:
+    """Given a URL, the task picker becomes a live autocomplete.
+
+    `url` on a select field is the whole mechanism: Sentry's frontend (`getFieldProps`) turns
+    the field async only when it sees one, and then calls the endpoint — debounced — as the
+    user types. The `query` text box exists purely to work around not having this, so it must
+    be gone; leaving it would mean two search boxes for one search.
+    """
+    client = FakeClient()
+
+    fields = build_link_config(client, {"project": "1"}, search_url="/extensions/jaga/search/o/1/")
+    by_name = _by_name(fields)
+
+    external_issue = by_name["externalIssue"]
+    assert external_issue["url"] == "/extensions/jaga/search/o/1/"
+    assert external_issue["type"] == "select"
+    assert "query" not in by_name
+
+    # The space select stays, and stays `updatesForm`: its value is what the frontend sends to
+    # the endpoint as `?project=`, and Jaga cannot search without a space.
+    assert by_name["project"]["updatesForm"] is True
+
+    # Nothing is searched while the form is merely being rendered — that is the endpoint's job.
+    assert client.searches == []
+
+
+def test_link_config_without_a_search_url_keeps_the_updates_form_search() -> None:
+    """The endpoint is only mounted if the admin set `ROOT_URLCONF`. Without it the form must
+    still work — the old `query` + `updatesForm` behaviour, not a dead select."""
+    by_name = _by_name(build_link_config(FakeClient(), {"project": "1", "query": "login"}))
+
+    assert "url" not in by_name["externalIssue"]
+    assert by_name["query"]["updatesForm"] is True
+    assert by_name["externalIssue"]["choices"] == [("PLT-5", "PLT-5 — Login is broken")]
+
+
 def test_get_task_summary() -> None:
     summary = get_task_summary(FakeClient(), "PLT-500")
     assert summary["key"] == "PLT-500"

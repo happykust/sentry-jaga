@@ -208,23 +208,50 @@ def create_task_from_form(client: JagaClient, form_data: dict[str, Any]) -> dict
     }
 
 
-def build_link_config(client: JagaClient, params: dict[str, Any]) -> list[dict[str, Any]]:
-    """Fields of the link form: space, search query, task picker.
+def build_link_config(
+    client: JagaClient, params: dict[str, Any], search_url: str | None = None
+) -> list[dict[str, Any]]:
+    """Fields of the link form: the space, and a way to pick a task in it.
 
-    There is no live autocomplete — an external package cannot register a search endpoint
-    in Sentry's urlconf. So the search runs through `updatesForm`: the user types a query,
-    the form is re-fetched, and the task list fills up.
+    There are two ways to pick, and which one we get depends on something outside this package:
+    whether the admin pointed `ROOT_URLCONF` at `sentry_jaga.urlconf` (see `urlconf.py`).
 
-    The flip side of `updatesForm` is that Sentry's frontend re-fetches the config on every
-    keystroke, there is no debounce there, and an external package cannot ship its own JS.
-    We soften it on the server: we do not search for queries shorter than
-    `MIN_QUERY_LENGTH`, and the list of spaces is served from the client's cache (see
-    `JagaClient.get_projects`).
+    * `search_url` given — the real thing. A `url` on a `select` field is what makes Sentry's
+      frontend treat it as an async select: it calls the endpoint as the user types, with its
+      own debounce, and renders the results. No `query` field is needed, and no search runs
+      while the form is merely being rendered.
+
+    * `search_url` is None — the fallback, and the only thing that worked before the endpoint
+      existed. The query is a plain text field with `updatesForm`, so Sentry re-fetches the
+      WHOLE config on every keystroke (there is no debounce on that path, and an external
+      package cannot ship JS to add one). We soften it on the server: nothing is searched below
+      `MIN_QUERY_LENGTH`, and the list of spaces comes from the client's cache.
+
+    The core must not know what a URL route is, let alone import `sentry`, so the caller
+    (`issues.py`) resolves it and passes it down.
     """
     projects = _require_projects(client)
     project_id = _selected_id(params, "project", [p.id for p in projects])
-    query = str(params.get("query") or "").strip()
 
+    if search_url is not None:
+        return [
+            _project_field(projects, project_id),
+            {
+                "name": "externalIssue",
+                "label": "Task",
+                "type": "select",
+                # `url` IS the feature: `getFieldProps` in Sentry's frontend switches the
+                # select to async the moment it sees one. Without it the key is inert.
+                "url": search_url,
+                "required": True,
+                "help": (
+                    f"Start typing a task code or part of a title — "
+                    f"the search starts at {MIN_QUERY_LENGTH} characters."
+                ),
+            },
+        ]
+
+    query = str(params.get("query") or "").strip()
     choices: list[tuple[str, str]] = []
     if len(query) >= MIN_QUERY_LENGTH:
         choices = [

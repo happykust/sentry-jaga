@@ -101,9 +101,11 @@ python_version = "3.13"
 strict = true
 packages = ["sentry_jaga"]
 mypy_path = "src"
-# sentry is not fully typed — do not trip over its internals
+# sentry is not fully typed — do not trip over its internals. `rest_framework` is here for the
+# same reason as `sentry`: it is not a dependency of this package (it arrives with Sentry), so it
+# is absent from the unit environment, and DRF ships no stubs anyway.
 [[tool.mypy.overrides]]
-module = ["sentry.*", "django.*"]
+module = ["sentry.*", "django.*", "rest_framework.*"]
 ignore_missing_imports = true
 follow_imports = "silent"
 
@@ -153,6 +155,9 @@ omit = [
     "src/sentry_jaga/issues.py",
     "src/sentry_jaga/sync.py",
     "src/sentry_jaga/notify_action.py",
+    "src/sentry_jaga/search.py",
+    "src/sentry_jaga/urls.py",
+    "src/sentry_jaga/urlconf.py",
 ]
 
 [tool.coverage.report]

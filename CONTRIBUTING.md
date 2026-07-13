@@ -96,11 +96,24 @@ PYTHONPATH=$SENTRY .venv/bin/pytest \
   -c "$SENTRY/pyproject.toml" -p sentry.testutils.pytest "$JAGA/tests/integration"
 ```
 
-Expect **16 passed** (~50 s, plus a one-off test-DB creation). Nothing in the Sentry checkout
+Expect **30 passed** (~70 s, plus a one-off test-DB creation). Nothing in the Sentry checkout
 is modified by any of this. `tests/integration/conftest.py` explains the two things the harness
 has to arrange itself: registering the provider in Sentry's integration manager (in production
 that is the `SENTRY_DEFAULT_INTEGRATIONS` line in `sentry.conf.py`) and re-creating the autouse
 fixtures of Sentry's root conftest.
+
+Two things about this environment are easy to get wrong:
+
+- **Editable is not enough for entry points.** Code edits are picked up straight away, but the
+  `[project.entry-points]` table is *metadata*: it is baked into the `.dist-info` at install
+  time. Change it and nothing happens until you reinstall — `"$SENTRY/.venv/bin/pip" install -e
+  "$JAGA" --no-deps`. The `sentry.apps` entry point is what puts the package into
+  `INSTALLED_APPS`, which is what runs `JagaAppConfig.ready()` — and that is what registers the
+  alert-rule action.
+- **The search endpoint only exists under our urlconf.** `ROOT_URLCONF = "sentry_jaga.urlconf"`
+  is optional in production, so the tests do not set it globally; `tests/integration/test_search.py`
+  turns it on per-test with `override_settings`. That is deliberate: it lets the same file assert
+  the autocomplete *and* the fallback that must survive without the setting.
 
 The same recipe runs in CI, in the `integration` job — see the note there on why it does not
 block a merge yet.

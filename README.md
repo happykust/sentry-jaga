@@ -45,7 +45,23 @@ comment.
    )
    ```
 
-3. Restart Sentry — the `web` process **and the one that runs background tasks**.
+3. *(Optional)* Turn on the live task search when linking an issue:
+
+   ```python
+   ROOT_URLCONF = "sentry_jaga.urlconf"
+   ```
+
+   This is the ordinary Django setting, and `sentry_jaga.urlconf` is Sentry's own urlconf with
+   the package's routes stacked on top — nothing of Sentry's is removed or shadowed. It exists
+   because Sentry has no hook for an out-of-tree package to add a route, and a search endpoint
+   is what an autocomplete needs.
+
+   **It is optional and nothing breaks without it.** With the line, the "Task" field of the link
+   form becomes a real autocomplete: you type, and Sentry queries the endpoint (debounced) and
+   shows the matches. Without it, the field falls back to searching by re-fetching the form as
+   you type — slower and chattier, but it works. See [Limitations](#limitations).
+
+4. Restart Sentry — the `web` process **and the one that runs background tasks**.
 
    The status sync (the comment posted to the Jaga task when a Sentry issue is resolved) runs
    as a background task, so it will silently do nothing if only `web` is restarted. Note that
@@ -91,6 +107,17 @@ is cached in Sentry's Django cache.
 - **Link.** A task is searched by title or code (`GET /v1/task/searchByTitleCode`, starting
   from 3 characters of the query), then resolved by code
   (`GET /v1/task/findExtendedWithFlexField/code/{taskCode}`).
+
+  How you search depends on whether `ROOT_URLCONF` is set (step 3 of the installation). With
+  it, the "Task" field is an autocomplete backed by the package's own endpoint
+  (`/extensions/jaga/search/<org>/<integration_id>/`), which Sentry calls, debounced, as you
+  type. Without it, the field falls back to a plain text box that re-fetches the whole form on
+  every keystroke.
+- **Alert rules.** "Create a Jaga task in ... with these ..." is available as an action on an
+  issue alert rule: pick the space and the task type when you set the rule up, and every issue
+  that trips it files a task. The title and the description come from the event itself, and the
+  task is linked to the Sentry issue exactly as a hand-created one is — so the status sync
+  applies to it too.
 - **Status sync.** When a Sentry issue is resolved or reopened, a comment is posted to the
   linked task (`POST /v1/comment`).
 
@@ -110,9 +137,18 @@ the package creates no tables of its own.
   with its mnemonic. Either make the field optional in Jaga, or create such tasks by hand.
 - **The sync is one-way, Sentry → Jaga.** Inbound Jaga → Sentry webhooks are not supported:
   changes made on the Jaga side do not reach Sentry.
-- **No live autocomplete when linking.** A task is searched by refreshing the form rather
-  than by suggestions as you type: an external package cannot register a search endpoint in
-  Sentry's urlconf.
+- **The live search when linking needs one line of config.** Autocomplete requires an HTTP
+  endpoint, and Sentry offers an out-of-tree package no hook to add a route with. The package
+  ships one anyway, as a `ROOT_URLCONF` you can point Sentry at (step 3 of the installation).
+  Leave it out and the link form still works — it just searches by re-fetching the form as you
+  type, which is slower and chattier.
+- **Alert-rule actions do not reach Sentry's new workflow engine.** The rule works: it is in
+  Sentry's rule registry, it saves, and it fires. But Sentry is migrating issue alerts to a new
+  internal `Action` model, and that path is closed to out-of-tree integrations — its provider
+  list (`Action.Type`) and its translator table are hardcoded enums, with no `jaga` in them.
+  Saving a Jaga rule therefore logs one `Action translator not found` error, which is harmless
+  today (the legacy path is what executes) but will need upstream support if Sentry ever drops
+  it.
 
 ## Development
 

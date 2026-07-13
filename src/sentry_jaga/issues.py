@@ -11,6 +11,7 @@ from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
 
+from django.urls import NoReverseMatch, reverse
 from sentry.integrations.mixins.issues import IssueBasicIntegration
 from sentry.shared_integrations.exceptions import IntegrationError, IntegrationFormError
 from sentry.utils.http import absolute_uri
@@ -107,9 +108,32 @@ class JagaIssuesMixin(IssueBasicIntegration):
         with _as_integration_error():
             return issue_config.create_task_from_form(self.get_client(), data)
 
+    def _search_url(self, group: Group) -> str | None:
+        """The autocomplete endpoint for the link form — if it is reachable at all.
+
+        `sentry_jaga.urls` only exists in the urlconf when the admin has set
+
+            ROOT_URLCONF = "sentry_jaga.urlconf"
+
+        That is optional, and the integration has to work without it. When the route is not
+        installed, `reverse` raises `NoReverseMatch` and we hand the core no URL, which puts the
+        link form back on its `updatesForm` search. Nothing else changes.
+        """
+        try:
+            # The annotation is for mypy: without Django stubs `reverse()` returns Any, and
+            # strict mode will not let that be returned as `str | None`.
+            url: str = reverse("sentry-jaga-search", args=[group.organization.slug, self.model.id])
+        except NoReverseMatch:
+            return None
+        return url
+
     def get_link_issue_config(self, group: Group, **kwargs: Any) -> list[dict[str, Any]]:
         with _as_integration_error():
-            return issue_config.build_link_config(self.get_client(), kwargs.get("params") or {})
+            return issue_config.build_link_config(
+                self.get_client(),
+                kwargs.get("params") or {},
+                search_url=self._search_url(group),
+            )
 
     def get_issue(self, issue_id: str, **kwargs: Any) -> dict[str, Any]:
         with _as_integration_error():
