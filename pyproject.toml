@@ -102,17 +102,20 @@ markers = ["sentry: тесты, требующие установленного 
 source = ["src/sentry_jaga"]
 branch = true
 # Слой Sentry непокрываем по конструкции, и держать его в знаменателе — значит
-# показывать заведомо ложную цифру. Эти модули импортируют `sentry`: пакета нет на
-# PyPI, из исходников он ставится тяжело, а его тестовый стек требует поднятого
-# Postgres/Redis/Kafka/Snuba — в юнит-прогоне такого окружения нет и не будет
+# показывать заведомо ложную цифру. Эти модули импортируют `sentry` на уровне модуля:
+# пакета нет на PyPI, из исходников он ставится тяжело, а его тестовый стек требует
+# поднятого Postgres/Redis/Kafka/Snuba — в юнит-прогоне такого окружения нет и не будет
 # (tests/integration/ поэтому скипаются через `pytest.importorskip("sentry")`).
 # Вместо тестов их корректность держит mypy против настоящих исходников Sentry —
-# отдельная блокирующая CI-джоба. Так что метрика измеряет то, что реально можно
-# покрыть: ядро (client/, fields.py, descriptions.py, issue_config.py).
+# отдельная блокирующая CI-джоба.
+#
+# pipeline.py здесь СОЗНАТЕЛЬНО отсутствует: `sentry` в нём импортируется только внутри
+# `InstallationConfigView.dispatch`, а форма и `verify_credentials` тестируются на одном
+# django. Спрятать файл целиком — значит спрятать и покрытый код, и любой будущий
+# непокрытый; непокрываем там ровно один метод, он и помечен `# pragma: no cover`.
 omit = [
     "src/sentry_jaga/apps.py",
     "src/sentry_jaga/metadata.py",
-    "src/sentry_jaga/pipeline.py",
     "src/sentry_jaga/integration.py",
     "src/sentry_jaga/issues.py",
     "src/sentry_jaga/sync.py",

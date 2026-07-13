@@ -63,7 +63,15 @@ class InstallationForm(forms.Form):
 class InstallationConfigView:
     """Единственный шаг установки: форма с адресом и учёткой."""
 
-    def dispatch(self, request: HttpRequest, pipeline: IntegrationPipeline) -> HttpResponseBase:
+    # Единственная непокрываемая часть модуля: метод существует только в рантайме
+    # Sentry — ему нужны `render_to_response` и настоящий `IntegrationPipeline`,
+    # которых в юнит-прогоне нет. Сам он логики не содержит: вся проверяемая часть
+    # вынесена в `InstallationForm` и `verify_credentials` — они покрыты тестами.
+    def dispatch(  # pragma: no cover
+        self,
+        request: HttpRequest,
+        pipeline: IntegrationPipeline,
+    ) -> HttpResponseBase:
         # Импорт отложен: форма и verify_credentials должны быть импортируемы без
         # установленного sentry (их юнит-тесты зависят только от django).
         from sentry.web.helpers import render_to_response

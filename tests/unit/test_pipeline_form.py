@@ -6,27 +6,24 @@ from django.core.exceptions import ValidationError
 # как её видит requests (RequestException), — это и ловит verify_credentials.
 from requests.exceptions import ConnectionError
 
-from sentry_jaga.pipeline import verify_credentials
+from sentry_jaga.pipeline import InstallationForm, verify_credentials
 
 BASE = "https://jaga.example.com"
 API = f"{BASE}/external-api"
 
+LOGIN_OK = {
+    "accessToken": "at",
+    "refreshToken": "rt",
+    "expiresAt": "2099-01-01T00:00:00Z",
+    "id": 1,
+    "email": "bot@example.com",
+    "fullName": "Bot",
+}
+
 
 @responses.activate
 def test_verify_credentials_ok() -> None:
-    responses.add(
-        responses.POST,
-        f"{API}/v1/auth/login",
-        json={
-            "accessToken": "at",
-            "refreshToken": "rt",
-            "expiresAt": "2099-01-01T00:00:00Z",
-            "id": 1,
-            "email": "bot@example.com",
-            "fullName": "Bot",
-        },
-        status=200,
-    )
+    responses.add(responses.POST, f"{API}/v1/auth/login", json=LOGIN_OK, status=200)
     verify_credentials(BASE, "bot@example.com", "secret")
 
 
@@ -54,3 +51,37 @@ def test_verify_credentials_reports_api_error() -> None:
     )
     with pytest.raises(ValidationError, match="Яга вернула ошибку при входе"):
         verify_credentials(BASE, "bot@example.com", "secret")
+
+
+@responses.activate
+def test_form_valid_when_jaga_accepts_credentials() -> None:
+    """Форма валидна только после того, как Яга подтвердила учётку живым логином."""
+    responses.add(responses.POST, f"{API}/v1/auth/login", json=LOGIN_OK, status=200)
+    form = InstallationForm(
+        {"instance_url": BASE, "email": "bot@example.com", "password": "secret"}
+    )
+
+    assert form.is_valid(), form.errors
+    assert [call.request.url for call in responses.calls] == [f"{API}/v1/auth/login"]
+
+
+@responses.activate
+def test_form_surfaces_rejection_by_jaga_as_form_error() -> None:
+    responses.add(
+        responses.POST, f"{API}/v1/auth/login", json={"message": "Неверный пароль"}, status=401
+    )
+    form = InstallationForm({"instance_url": BASE, "email": "bot@example.com", "password": "wrong"})
+
+    # Именно dict(): str(form.errors) рендерит HTML и требует загруженных app-ов Django.
+    assert not form.is_valid()
+    assert "учётные данные" in dict(form.errors)["__all__"][0]
+
+
+@responses.activate
+def test_form_does_not_call_jaga_when_a_field_is_missing() -> None:
+    """Без пароля проверять нечего — в Ягу не ходим (иначе шлём заведомо битый логин)."""
+    form = InstallationForm({"instance_url": BASE, "email": "bot@example.com"})
+
+    assert not form.is_valid()
+    assert dict(form.errors) == {"password": ["This field is required."]}
+    assert len(responses.calls) == 0
