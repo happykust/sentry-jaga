@@ -8,6 +8,7 @@ from sentry.integrations.models.organization_integration import (
     OrganizationIntegration,
 )
 from sentry.testutils.cases import IntegrationTestCase
+from sentry.testutils.silo import control_silo_test
 
 from sentry_jaga.integration import JagaIntegrationProvider
 
@@ -23,6 +24,14 @@ AUTH_OK = {
 }
 
 
+# The installation pipeline view (/organizations/<org>/integrations/jaga/setup/) is a
+# control-silo view: `Integration` and `OrganizationIntegration` live in the control silo. In
+# the default test silo mode (CELL) the request is rejected before it ever reaches the pipeline
+# — "Received GET request ... to server in REGION mode. This view is available only in:
+# CONTROL, MONOLITH". Sentry marks its own installation tests the same way (see
+# BitbucketServerIntegrationTest, the closest analogue: a self-hosted instance with a URL and
+# credentials in the form).
+@control_silo_test
 class JagaInstallationTest(IntegrationTestCase):
     provider = JagaIntegrationProvider
 

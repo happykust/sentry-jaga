@@ -1,0 +1,110 @@
+# Infrastructure for the integration tests (tests/integration/), which run inside the
+# Sentry test environment.
+#
+#   docker compose -f docker-compose.test.yml up -d
+#
+# Postgres + Redis are what Sentry itself needs to boot; their parameters match Sentry's
+# defaults in src/sentry/conf/server.py (DB "sentry", user "postgres", empty password,
+# 127.0.0.1; Redis on localhost:6379).
+#
+# Snuba + ClickHouse are needed by exactly one test — see the comment on the `snuba` service.
+# No Kafka, no Relay, no Symbolicator, no Vroom: those are the *event ingest* path, and these
+# tests never ingest an event (the Group is created straight through the ORM).
+#
+services:
+  postgres:
+    image: postgres:14
+    container_name: sentry-jaga-postgres
+    environment:
+      # Sentry's default DATABASES["default"]["PASSWORD"] is "" — the server must accept it.
+      POSTGRES_HOST_AUTH_METHOD: trust
+      POSTGRES_USER: postgres
+      POSTGRES_DB: sentry
+    command:
+      # Sentry's test suite opens a connection per silo database (control/region/secondary)
+      # and pytest-django keeps them alive; the default 100 is tight under xdist.
+      - postgres
+      - -c
+      - max_connections=200
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  redis:
+    image: redis:6.2-alpine
+    container_name: sentry-jaga-redis
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  # --- Snuba, and the ClickHouse under it. Needed by exactly one test. ---
+  #
+  # `JagaIntegration.get_create_issue_config()` pre-fills the task description from the last
+  # event of the issue, so it calls `group.get_latest_event()` — as Sentry's own
+  # `IssueBasicIntegration.get_create_issue_config()` does (integrations/mixins/issues.py).
+  # `Group.get_latest_event()` goes to the event store, and Sentry has exactly one event store
+  # backend: `SnubaEventStorage`. There is no dummy — so the call is an HTTP request to
+  # Snuba's /events/snql, and without Snuba the test dies with a SnubaError.
+  #
+  # This is NOT event ingest: our tests never send an event. Snuba is here only to answer
+  # "this group has no events" (→ get_latest_event() returns None → the body of the
+  # description stays empty). Hence no Kafka, no Relay, no consumers — just the query API.
+  #
+  # Snuba publishes no 26.3.x image (26.2.1 is the newest release); the /events/snql contract
+  # is stable across those, and the query we make is an empty one.
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.3
+    container_name: sentry-jaga-clickhouse
+    environment:
+      # Without this the image's entrypoint locks the `default` user down to loopback, and
+      # Snuba (a different container) gets "Authentication failed" over the network. Skipping
+      # the user setup leaves the stock default user: no password, reachable from the compose
+      # network. Fine here — nothing is exposed outside the host.
+      CLICKHOUSE_SKIP_USER_SETUP: "1"
+    ulimits:
+      nofile: { soft: 262144, hard: 262144 }
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+
+  snuba:
+    image: getsentry/snuba:26.2.1
+    container_name: sentry-jaga-snuba
+    depends_on:
+      clickhouse: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    environment:
+      # `test`, not `docker`: it sets TESTING=True, which is what registers the
+      # /tests/entities/<entity>/insert route. Sentry's `Group` post-save signal
+      # (issues/attributes.py) pushes a group-attributes snapshot there on every
+      # `create_group()`; under SNUBA_SETTINGS=docker that route does not exist and the signal
+      # logs a noisy "HTTP 405 response from Snuba!". This is the mode Sentry's own CI runs
+      # Snuba in. CLICKHOUSE_HOST/REDIS_HOST are still read from the env in this mode.
+      SNUBA_SETTINGS: test
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: "9000"
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      UWSGI_DISABLE_LOGGING: "true"
+    ports:
+      - "127.0.0.1:1218:1218"
+    # `migrations migrate` bootstraps the ClickHouse schema (it needs ClickHouse only — the
+    # Kafka topic bootstrap of `snuba bootstrap` is for consumers, which we do not run).
+    # The image's entrypoint is `snuba` itself, so it has to be overridden to chain the two.
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["snuba migrations migrate --force && snuba api"]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://localhost:1218/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 40

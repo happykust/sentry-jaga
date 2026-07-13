@@ -4,7 +4,9 @@ pytest.importorskip("sentry")
 
 import responses
 from sentry.integrations.models.external_issue import ExternalIssue
+from sentry.silo.base import SiloMode
 from sentry.testutils.cases import APITestCase
+from sentry.testutils.silo import assume_test_silo_mode
 
 BASE = "https://jaga.example.com"
 API = f"{BASE}/external-api"
@@ -21,13 +23,17 @@ AUTH_OK = {
 class JagaSyncTest(APITestCase):
     def setUp(self) -> None:
         super().setUp()
-        self.integration = self.create_provider_integration(
-            provider="jaga",
-            name="Jaga",
-            external_id=BASE,
-            metadata={"instance_url": BASE, "email": "bot@example.com", "password": "secret"},
-        )
-        self.integration.add_organization(self.organization, self.user)
+        # Control-silo models — see the comment in test_issues.py. `ExternalIssue` below is a
+        # region model, so it is created in the default (CELL) mode.
+        with assume_test_silo_mode(SiloMode.CONTROL):
+            self.integration = self.create_provider_integration(
+                provider="jaga",
+                name="Jaga",
+                external_id=BASE,
+                metadata={"instance_url": BASE, "email": "bot@example.com", "password": "secret"},
+            )
+            self.integration.add_organization(self.organization, self.user)
+
         self.installation = self.integration.get_installation(self.organization.id)
         self.external_issue = ExternalIssue.objects.create(
             organization_id=self.organization.id,

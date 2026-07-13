@@ -3,7 +3,9 @@ import pytest
 pytest.importorskip("sentry")
 
 import responses
+from sentry.silo.base import SiloMode
 from sentry.testutils.cases import APITestCase
+from sentry.testutils.silo import assume_test_silo_mode
 
 BASE = "https://jaga.example.com"
 API = f"{BASE}/external-api"
@@ -86,13 +88,19 @@ LABELS_RESPONSE = {
 class JagaIssuesTest(APITestCase):
     def setUp(self) -> None:
         super().setUp()
-        self.integration = self.create_provider_integration(
-            provider="jaga",
-            name="Jaga",
-            external_id=BASE,
-            metadata={"instance_url": BASE, "email": "bot@example.com", "password": "secret"},
-        )
-        self.integration.add_organization(self.organization, self.user)
+        # `Integration`/`OrganizationIntegration` are control-silo models; the test runs in the
+        # default CELL mode, so writing them needs the control silo explicitly. The installation
+        # itself is then used from the region silo — which is exactly where Sentry calls it from
+        # in production (the issue-linking endpoints live on the region silo).
+        with assume_test_silo_mode(SiloMode.CONTROL):
+            self.integration = self.create_provider_integration(
+                provider="jaga",
+                name="Jaga",
+                external_id=BASE,
+                metadata={"instance_url": BASE, "email": "bot@example.com", "password": "secret"},
+            )
+            self.integration.add_organization(self.organization, self.user)
+
         self.installation = self.integration.get_installation(self.organization.id)
         self.group = self.create_group(project=self.project, message="Login is broken")
 
