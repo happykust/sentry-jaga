@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "sentry-jaga"
 version = "0.1.0"
-description = "Интеграция Sentry с таск-трекером Яга (Ростелеком)"
+description = "Sentry integration for the Jaga issue tracker (Rostelecom)"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.13"
@@ -41,19 +41,20 @@ dev = [
     "mypy>=1.11",
     "types-requests",
     "pre-commit>=3.8",
-    # В рантайме Django приходит вместе с sentry (он требует django>=5.2.11).
-    # Здесь — только для тестов формы установки: `django.forms` и ValidationError
-    # работают без настроенных settings, поэтому тест живёт в tests/unit.
+    # At runtime Django comes along with sentry (which requires django>=5.2.11).
+    # Here it is only needed for the installation form tests: `django.forms` and
+    # ValidationError work without configured settings, so the test lives in tests/unit.
     #
-    # Верхняя граница <6 обязательна: у Django 5.x `URLField` по умолчанию достраивает
-    # адрес без схемы до `http://`, а у 6.x — уже до `https://`. Дать тестам уехать на
-    # Django 6 значит проверять поведение, которого в проде (Sentry 26.3.1 → Django 5.2)
-    # нет, — ровно там, где расхождение стоит пароля сервисного аккаунта.
+    # The <6 upper bound is mandatory: on Django 5.x a `URLField` completes a schemeless
+    # address to `http://` by default, while on 6.x it already completes it to `https://`.
+    # Letting the tests drift onto Django 6 would mean testing behaviour that production
+    # (Sentry 26.3.1 → Django 5.2) does not have — in exactly the place where the
+    # divergence costs the service account password.
     "django>=5.2.11,<6",
 ]
-# Sentry НЕТ на PyPI выше 23.7.1 — ставим из исходников по тегу.
-# Отдельная группа: тяжёлая (157 транзитивных зависимостей) и может не собраться,
-# поэтому она НЕ входит в дефолтный `uv sync`. Ставится явно:
+# Sentry is NOT on PyPI above 23.7.1 — install it from source, by tag.
+# A separate group: it is heavy (157 transitive dependencies) and may fail to build, so it
+# is NOT part of the default `uv sync`. Install it explicitly:
 #   uv sync --group sentry
 sentry = [
     "sentry @ git+https://github.com/getsentry/sentry@26.3.1",
@@ -62,9 +63,9 @@ sentry = [
 [tool.hatch.build.targets.wheel]
 packages = ["src/sentry_jaga"]
 
-# В sdist едут только код пакета и обвязка проекта. Спецификация API Яги
-# (jaga-openapi.json) — внутренний документ Ростелекома, публиковать его на PyPI
-# под MIT нельзя; остальное — служебное и в дистрибутиве не нужно.
+# The sdist carries only the package code and the project scaffolding. The Jaga API spec
+# (jaga-openapi.json) is an internal Rostelecom document and must not be published to PyPI
+# under MIT; everything else is housekeeping and is not needed in a distribution.
 [tool.hatch.build.targets.sdist]
 exclude = [
     "/docs",
@@ -83,31 +84,30 @@ target-version = "py313"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "C4", "RUF", "TID"]
-ignore = ["RUF001", "RUF002", "RUF003"]  # кириллица в строках/комментариях — намеренно
 
 [tool.mypy]
 python_version = "3.13"
 strict = true
 packages = ["sentry_jaga"]
 mypy_path = "src"
-# sentry не типизирован полностью — не падаем на его внутренностях
+# sentry is not fully typed — do not trip over its internals
 [[tool.mypy.overrides]]
 module = ["sentry.*", "django.*"]
 ignore_missing_imports = true
 follow_imports = "silent"
 
-# Базовые классы Sentry/Django резолвятся в Any (пакеты не установлены),
-# а strict запрещает наследование от Any. Разрешаем — иначе каждый класс
-# слоя интеграции обрастает `# type: ignore[misc]`.
+# The Sentry/Django base classes resolve to Any (the packages are not installed), and strict
+# mode forbids subclassing Any. Allow it — otherwise every class of the integration layer
+# grows a `# type: ignore[misc]`.
 [[tool.mypy.overrides]]
 module = ["sentry_jaga.*"]
 disallow_subclassing_any = false
 
-# Код проверяется в двух конфигурациях: без исходников Sentry (sentry.* → Any) и
-# против них (MYPYPATH, CI-джоба «Типы против API Sentry»). Часть методов Sentry не
-# аннотирована — вызов требует `# type: ignore[no-untyped-call]`, который во втором
-# прогоне нужен, а в первом считается неиспользованным. Гасим предупреждение только
-# для модулей, вызывающих нетипизированные методы Sentry.
+# The code is checked in two configurations: without the Sentry sources (sentry.* -> Any) and
+# against them (MYPYPATH, the "Types against the Sentry API" CI job). Some Sentry methods are
+# unannotated — calling them needs a `# type: ignore[no-untyped-call]`, which is required in
+# the second run but counts as unused in the first. Silence the warning only for the modules
+# that call untyped Sentry methods.
 [[tool.mypy.overrides]]
 module = ["sentry_jaga.issues"]
 warn_unused_ignores = false
@@ -115,23 +115,24 @@ warn_unused_ignores = false
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra --strict-markers"
-markers = ["sentry: тесты, требующие установленного пакета sentry"]
+markers = ["sentry: tests that require the sentry package to be installed"]
 
 [tool.coverage.run]
 source = ["src/sentry_jaga"]
 branch = true
-# Слой Sentry непокрываем по конструкции, и держать его в знаменателе — значит
-# показывать заведомо ложную цифру. Эти модули импортируют `sentry` на уровне модуля:
-# пакета нет на PyPI, из исходников он ставится тяжело, а его тестовый стек требует
-# поднятого Postgres/Redis/Kafka/Snuba — в юнит-прогоне такого окружения нет и не будет
-# (tests/integration/ поэтому скипаются через `pytest.importorskip("sentry")`).
-# Вместо тестов их корректность держит mypy против настоящих исходников Sentry —
-# отдельная блокирующая CI-джоба.
+# The Sentry layer is uncoverable by construction, and keeping it in the denominator would
+# mean reporting a knowingly false number. These modules import `sentry` at module level:
+# the package is not on PyPI, installing it from source is heavy, and its test stack needs a
+# running Postgres/Redis/Kafka/Snuba — an environment the unit run does not have and never
+# will (which is why tests/integration/ skip via `pytest.importorskip("sentry")`).
+# Instead of tests, their correctness is held by mypy against the real Sentry sources — a
+# separate, blocking CI job.
 #
-# pipeline.py здесь СОЗНАТЕЛЬНО отсутствует: `sentry` в нём импортируется только внутри
-# `InstallationConfigView.dispatch`, а форма и `verify_credentials` тестируются на одном
-# django. Спрятать файл целиком — значит спрятать и покрытый код, и любой будущий
-# непокрытый; непокрываем там ровно один метод, он и помечен `# pragma: no cover`.
+# pipeline.py is DELIBERATELY absent from this list: it imports `sentry` only inside
+# `InstallationConfigView.dispatch`, while the form and `verify_credentials` are tested on
+# django alone. Hiding the whole file would hide the covered code too, along with any future
+# uncovered code; exactly one method there is uncoverable, and it is marked
+# `# pragma: no cover`.
 omit = [
     "src/sentry_jaga/apps.py",
     "src/sentry_jaga/metadata.py",
@@ -142,5 +143,5 @@ omit = [
 
 [tool.coverage.report]
 exclude_lines = ["pragma: no cover", "if TYPE_CHECKING:", "raise NotImplementedError"]
-# Ядро — вся логика проекта и единственная тестируемая зона: планка высокая.
+# The core is all of the project's logic and the only testable zone: the bar is high.
 fail_under = 95

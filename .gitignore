@@ -327,17 +327,17 @@ cython_debug/
 
 
 ### Project
-# Мусор IDE (шаблон выше гасит его лишь частично — гасим целиком)
+# IDE clutter (the template above only covers it partially — cover it entirely)
 .idea/
 
-# Внутренняя спецификация API Яги (Ростелеком): в OSS-репозиторий и в релиз не едет
+# The internal Jaga API spec (Rostelecom): it goes neither into the OSS repo nor a release
 jaga-openapi.json
 
-# Служебный скретч SDD-агентов
+# Scratch space of the SDD agents
 .superpowers/
 
-# Исходники Sentry для проверки типов (клонируются локально/в CI)
+# Sentry sources used for type checking (cloned locally / in CI)
 .sentry-src/
 
-# Служебные worktree субагентов
+# Scratch worktrees of subagents
 .claude/

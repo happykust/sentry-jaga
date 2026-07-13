@@ -9,13 +9,13 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-# CI только читает код: сужаем токен до минимума вместо дефолтных скоупов.
+# CI only reads the code: narrow the token to the minimum instead of the default scopes.
 permissions:
   contents: read
 
 jobs:
   lint:
-    name: Линтеры и типы
+    name: Linters and types
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -28,7 +28,7 @@ jobs:
       - run: uv run mypy
 
   unit:
-    name: Юнит-тесты ядра
+    name: Core unit tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -36,7 +36,7 @@ jobs:
         with:
           enable-cache: true
       - run: uv sync --locked
-      - name: Прогнать юнит-тесты (без sentry)
+      - name: Run the unit tests (without sentry)
         run: uv run pytest tests/unit --cov --cov-report=xml --cov-report=term
       - uses: actions/upload-artifact@v4
         with:
@@ -44,7 +44,7 @@ jobs:
           path: coverage.xml
 
   typecheck-sentry:
-    name: Типы против API Sentry
+    name: Types against the Sentry API
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -52,19 +52,19 @@ jobs:
         with:
           enable-cache: true
       - run: uv sync --locked
-      - name: Получить исходники Sentry 26.3.1 (только код, без установки)
+      - name: Fetch the Sentry 26.3.1 sources (code only, no install)
         run: git clone --depth 1 --branch 26.3.1 https://github.com/getsentry/sentry.git .sentry-src
-      - name: Проверить слой Sentry против реального API
+      - name: Check the Sentry layer against the real API
         env:
           MYPYPATH: .sentry-src/src
         run: uv run mypy --follow-imports=silent
 
   integration:
-    name: Тесты слоя Sentry (non-blocking)
+    name: Sentry layer tests (non-blocking)
     runs-on: ubuntu-latest
-    # Sentry не публикуется в PyPI выше 23.7.1 и ставится только из исходников
-    # (157 зависимостей, нет [build-system]). Установка может не завестись —
-    # эта джоба НЕ блокирует merge. Блокирующие гейты: lint + unit.
+    # Sentry is not published to PyPI above 23.7.1 and can only be installed from source
+    # (157 dependencies, no [build-system]). The install may simply fail to come up, so
+    # this job does NOT block a merge. The blocking gates are lint + unit.
     continue-on-error: true
     services:
       postgres:
@@ -85,9 +85,9 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
-      - name: Поставить sentry из исходников (опциональная группа)
+      - name: Install sentry from source (optional group)
         run: uv sync --group sentry
-      - name: Прогнать тесты слоя Sentry
+      - name: Run the Sentry layer tests
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/sentry
           SENTRY_REDIS_HOST: localhost
