@@ -5,6 +5,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- The status sync now **moves the linked Jaga task**, instead of only commenting on it. The
+  target is configured per organization as a status *category* (Done / In progress / To do),
+  and the concrete status is resolved per task from the ones its own workflow can reach — Jaga
+  keeps a separate copy of every status per workflow (~90k of them on a real instance), so a
+  status id cannot be mapped directly.
+- Organization settings for the sync: the categories to move the task to when an issue is
+  resolved and when it regresses, and whether to comment in addition to moving.
+
 ### Changed
 
 - The project is now fully in English: documentation, code comments and user-facing strings.

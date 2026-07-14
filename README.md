@@ -8,8 +8,8 @@
 Integration between self-hosted Sentry and **Jaga**, the issue tracker by Rostelecom.
 
 The package adds an integration provider to Sentry: from an issue you can open a task in
-Jaga or link an existing one, and a change of the issue status is posted to the task as a
-comment.
+Jaga or link an existing one, and resolving the issue in Sentry moves the linked task to the
+status you configured (and, optionally, comments on it).
 
 ## Features
 
@@ -19,7 +19,10 @@ comment.
   space and a type.
 - **Link an existing Jaga task** to a Sentry issue by task code, with search by title and
   code.
-- **A comment on the task** when a Sentry issue is resolved or reopened.
+- **Status sync.** Resolving a Sentry issue **moves the linked task** to the status you chose
+  (and reopening it moves the task back); a comment can be posted on top. You map onto a status
+  *category* — Done / In progress / To do — and the concrete status is resolved per task from
+  the ones its own workflow allows.
 
 ## Compatibility
 
@@ -63,10 +66,9 @@ comment.
 
 4. Restart Sentry — the `web` process **and the one that runs background tasks**.
 
-   The status sync (the comment posted to the Jaga task when a Sentry issue is resolved) runs
-   as a background task, so it will silently do nothing if only `web` is restarted. Note that
-   Sentry 26.3 no longer uses Celery: `sentry run worker` has been removed in favour of
-   `sentry run taskworker`.
+   The status sync (moving the Jaga task when a Sentry issue is resolved) runs as a background
+   task, so it will silently do nothing if only `web` is restarted. Note that Sentry 26.3 no
+   longer uses Celery: `sentry run worker` has been removed in favour of `sentry run taskworker`.
 
 ## Configuration
 
@@ -77,6 +79,24 @@ installation, so invalid credentials show up right away.
 The credentials are stored in Sentry's encrypted `Integration.metadata` field. Create a
 **dedicated service account** for the integration, with access only to the spaces you need
 to create tasks in: every task and comment will be created on its behalf.
+
+### Status sync settings
+
+Organization Settings → Integrations → **Jaga** → Configure:
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| Sync status to Jaga | on | Turns the whole sync on or off. |
+| Status to move the task to when the Sentry issue is resolved | Done | The status **category** a resolve moves the task into. |
+| Status to move the task to when the Sentry issue is reopened | To do | The same, for a regression. |
+| Also comment on the task | on | Post a comment in addition to moving the task. A comment is posted regardless whenever the task could not be moved. |
+
+The two category settings offer **Done**, **In progress** and **To do** — the categories Jaga
+groups all of its statuses under. One setting covers every space: the concrete status is picked
+per task, from the ones its own workflow can reach (see [How it works](#how-it-works)). That is
+also why these three choices are constants in the code rather than something fetched from Jaga:
+the settings page has to render even when Jaga is unreachable — that is exactly when you might
+need it, if only to switch the sync off.
 
 ## How it works
 
@@ -118,8 +138,29 @@ is cached in Sentry's Django cache.
   that trips it files a task. The title and the description come from the event itself, and the
   task is linked to the Sentry issue exactly as a hand-created one is — so the status sync
   applies to it too.
-- **Status sync.** When a Sentry issue is resolved or reopened, a comment is posted to the
-  linked task (`POST /v1/comment`).
+- **Status sync.** When a Sentry issue is resolved or reopened, the linked task is **moved to
+  another status** (`POST /v1/task/updateTaskStatusAndFields`) — and, if you leave the comment
+  option on, a comment is posted as well (`POST /v1/comment`).
+
+  The mapping is by **status category**, not by status id. Jaga gives every workflow its own
+  copies of the statuses, so a single instance carries tens of thousands of them (~90k across
+  ~15k workflows on the one this was built against) — far too many for a dropdown, and an id
+  picked in one space is meaningless in another. What *is* stable is the category every status
+  belongs to (`categoryNameM`): **To do**, **In progress**, **Done**. So you map onto a
+  category once, for the whole organization, and the concrete status is resolved per task:
+
+  1. the task is read (`GET /v1/task/findExtendedWithFlexField/code/{taskCode}`) — it reports
+     both the space it lives in and the statuses its workflow can reach from where it stands
+     (`statusTransitions`);
+  2. the statuses of that space are listed
+     (`GET /v1/workflowStatusesAvail?projectId={spaceId}`, a handful — not the global ~90k);
+  3. the task is moved to the **first reachable** status in the chosen category.
+
+  If the workflow has no way into that category from the task's current status, the task is
+  **left alone** and a comment is posted instead (always — regardless of the comment setting),
+  with a `no_status_in_category` warning in the Sentry logs naming the task and the statuses it
+  could have reached. Nothing is forced: the task is never pushed into a status its workflow
+  does not allow.
 
 The issue ↔ task relation is held by Sentry's own models (`ExternalIssue` and `GroupLink`) —
 the package creates no tables of its own.
