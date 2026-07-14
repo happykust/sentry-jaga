@@ -96,7 +96,7 @@ PYTHONPATH=$SENTRY .venv/bin/pytest \
   -c "$SENTRY/pyproject.toml" -p sentry.testutils.pytest "$JAGA/tests/integration"
 ```
 
-Expect **30 passed** (~70 s, plus a one-off test-DB creation). Nothing in the Sentry checkout
+Expect **68 passed** (~2 min, plus a one-off test-DB creation). Nothing in the Sentry checkout
 is modified by any of this. `tests/integration/conftest.py` explains the two things the harness
 has to arrange itself: registering the provider in Sentry's integration manager (in production
 that is the `SENTRY_DEFAULT_INTEGRATIONS` line in `sentry.conf.py`) and re-creating the autouse

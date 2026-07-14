@@ -67,7 +67,7 @@ jobs:
     # environment: a checkout of the tag, its lock installed by hand, its pytest pointed at our
     # test directory. The whole recipe is written up in CONTRIBUTING.md.
     #
-    # NON-BLOCKING ON PURPOSE: the recipe is verified locally (16/16 green against a real Sentry
+    # NON-BLOCKING ON PURPOSE: the recipe is verified locally (68/68 green against a real Sentry
     # 26.3.1), but it has never yet run on a GitHub runner — a fresh runner may trip over the
     # install or the containers. Remove `continue-on-error` as soon as this job has gone green
     # here once. The gates that do block a merge are lint, unit and typecheck-sentry.

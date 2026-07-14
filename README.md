@@ -45,7 +45,7 @@ status you configured (and, optionally, comments on it).
 
 | sentry-jaga | Sentry   | Python |
 |-------------|----------|--------|
-| 0.1.x       | 26.3.x   | ≥ 3.13 |
+| 1.0.x       | 26.3.x   | ≥ 3.13 |
 
 ## Installation
 
@@ -274,11 +274,22 @@ is cached in Sentry's Django cache.
   attribute, and writing it fills the task's `executors` as a consequence: it *is* what Jaga's
   own UI shows as the executor.
 
-  Sentry and Jaga are matched **by email** — every address the Sentry user has is tried, and the
-  first one Jaga knows wins. A Sentry user who does not exist in Jaga is not an error: the task
-  simply keeps whoever it had, and a `jaga.sync.assignee_not_in_jaga` line is logged. Assigning
-  a Sentry issue to a **team** clears the Jaga assignee, because a Jaga task is assigned to
-  people and there is nobody to pick from a team.
+  Sentry and Jaga are matched **by email**: the user's primary address is tried first, then their
+  verified ones, and the first that Jaga knows wins. The primary address leads on purpose —
+  Sentry's `RpcUser.emails` holds only *verified* addresses, and on a self-hosted Sentry with no
+  working SMTP nobody has any.
+
+  A Sentry user who does not exist in Jaga **leaves the task exactly as it was**. It is reported
+  to Sentry as a target that could not be found (and logged as `jaga.sync.assignee_not_in_jaga`),
+  and it is never turned into an unassignment: taking a real person off a real task because a
+  lookup missed would be the loudest possible way to lose data.
+
+  Assigning a Sentry issue to a **team** does nothing in Jaga. Sentry does not even queue the
+  outbound sync for a team — it only does so when the assignee is a user.
+
+  Unlike the status sync, a Jaga failure here is **not** swallowed: Sentry retries the assignment
+  five times, and swallowing would throw the retry away *and* record an assignment that never
+  happened as a success.
 
 The issue ↔ task relation is held by Sentry's own models (`ExternalIssue` and `GroupLink`) —
 the package creates no tables of its own.
@@ -301,6 +312,16 @@ the package creates no tables of its own.
   the moment the rule was written, and every task the rule ever filed afterwards would get the
   event of that one long-dead issue attached to it. No field, no attachment — the honest outcome.
   Tasks created from an issue by hand are unaffected.
+- **An alert rule whose assignee later leaves Jaga stops filing tasks.** A Ticket Rule saves the
+  create form it was written with, and the assignee is saved in it **as an email**. If that person
+  is later removed from Jaga, the email no longer resolves, and the rule fails to file a task at
+  all — rather than filing one without an assignee. It is logged (`jaga.issue.assignee_not_in_jaga`,
+  naming the address), but nobody is watching the rule, so nobody sees it. If you file tasks by
+  rule, either leave the rule's assignee empty or check it when someone leaves.
+- **A rule's saved form carries the email addresses of the space's members.** The assignee select
+  lists them as its choices, and Sentry stores a rule's rendered form fields on the `Rule` row —
+  so anyone who can open that rule in Sentry can read them. Nothing secret, but it is a list of
+  colleagues' addresses leaving Jaga and landing in Sentry.
 - **Only the members of a space can be assigned, and only if the service account can see them.**
   The assignee select is filled from the space's user-role matrix
   (`GET /v1/team/userRoles/applications/JAGA/projects/{projectId}`). If it comes up empty, the

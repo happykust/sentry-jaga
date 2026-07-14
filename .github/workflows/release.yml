@@ -4,6 +4,12 @@ on:
   push:
     tags: ["v*"]
 
+# Least privilege by default. The two jobs that need more say so themselves: `publish` takes
+# `id-token: write` to mint the OIDC token trusted publishing needs, and `github-release` takes
+# `contents: write` to create the release. `build` needs neither, and now cannot have them.
+permissions:
+  contents: read
+
 jobs:
   build:
     name: Build distributions

@@ -12,9 +12,11 @@ requires-python = ">=3.13"
 authors = [{ name = "Kirill Nikolaevsky", email = "me@happykust.dev" }]
 keywords = ["sentry", "jaga", "integration", "issue-tracker"]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Web Environment",
+    "Framework :: Django",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3 :: Only",
@@ -72,6 +74,12 @@ dev = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/sentry_jaga"]
+# `packages` ships EVERY file under that directory, whatever it is. An editor's `.bak`, a rebase's
+# `.orig`, a stray `.py.mbak` from a mutation run — each would be published to PyPI as part of the
+# package, in a release nobody would think to look inside. This is the guard. (CI builds from a
+# clean checkout, so it is a belt on top of braces — but the braces are a `.gitignore` rule, and
+# the person building a release by hand is the one who most needs them.)
+exclude = ["*.bak", "*.mbak", "*.orig", "*.rej", "*.swp"]
 
 # The sdist carries only the package code and the project scaffolding. The Jaga API spec
 # (jaga-openapi.json) is an internal Rostelecom document and must not be published to PyPI

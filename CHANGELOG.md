@@ -5,6 +5,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-07-14
+
+The first public release. Everything below was built and verified against a live Jaga instance
+and a real self-hosted Sentry 26.3.1; nothing here was taken on faith from the API spec, which
+turned out to be wrong about six separate things.
+
 ### Fixed
 
 - **The "Assignees" select was always empty, and said nothing about it.** It was filled from the
@@ -24,9 +30,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - **Assignee sync (`Sync assignment to Jaga`, off by default).** Assigning a Sentry issue puts
   the person on the linked Jaga task; unassigning takes them off it. The two systems are matched
-  by email: every address the Sentry user has is tried, and the first Jaga knows wins. A Sentry
-  user with no Jaga account is not an error — the task keeps whoever it had. Assigning a Sentry
-  issue to a **team** clears the Jaga assignee, because a Jaga task is assigned to people.
+  by email — the user's primary address first, then their verified ones. A Sentry user Jaga has
+  never heard of leaves the task exactly as it was; it is reported to Sentry as a target it could
+  not find, and never turned into an unassignment. Assigning an issue to a Sentry **team** does
+  nothing in Jaga (Sentry does not even queue the sync for a team).
 
   It is off by default because it names a real person in another system and notifies them, and
   Sentry's idea of who owns an issue is not automatically the right answer inside Jaga.
@@ -100,15 +107,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   environment — see CONTRIBUTING.md). The `sentry` dependency group is gone: it could never
   have worked, as Sentry is not installable as a package.
 
-## [0.1.0] - 2026-06-25
+### The rest of what 1.0.0 contains
 
-### Added
+- Creating Jaga tasks from a Sentry issue, with the attributes of the chosen task type rendered
+  dynamically (Jaga's EAV model).
+- Linking an existing Jaga task to a Sentry issue.
+- Installation through a form: the Jaga URL plus a service account, with the credentials checked
+  before the integration is created.
+- Ticket Rules: an alert rule can file a Jaga task by itself.
 
-- Creating Jaga tasks from a Sentry issue, with dynamic rendering of the task type's
-  attributes.
-- Linking existing Jaga tasks to a Sentry issue, with search by code and title.
-- A comment on the Jaga task when a Sentry issue is resolved or reopened.
-- Installation through a form: the Jaga URL plus a service account, with a credential check.
-
-[Unreleased]: https://github.com/happykust/sentry-jaga/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/happykust/sentry-jaga/releases/tag/v0.1.0
+[Unreleased]: https://github.com/happykust/sentry-jaga/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/happykust/sentry-jaga/releases/tag/v1.0.0

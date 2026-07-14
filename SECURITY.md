@@ -6,8 +6,8 @@ Security fixes are released for the latest minor version.
 
 | Version | Supported |
 |---------|-----------|
-| 0.1.x   | ✅         |
-| < 0.1   | ❌         |
+| 1.0.x   | ✅         |
+| < 1.0   | ❌         |
 
 ## Reporting a vulnerability
 
@@ -15,7 +15,7 @@ Security fixes are released for the latest minor version.
 
 File a private report through GitHub: the
 [Security → Report a vulnerability](https://github.com/happykust/sentry-jaga/security/advisories/new)
-tab of the repository. If GitHub is unavailable, email `lhappykust@gmail.com`.
+tab of the repository. If GitHub is unavailable, email `me@happykust.dev`.
 
 Useful things to include:
 
