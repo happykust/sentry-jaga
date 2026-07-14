@@ -5,6 +5,17 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    ignore:
+      # Django is a DEV dependency here: it exists only so the installation-form tests can run
+      # without Sentry. At runtime it arrives with Sentry, and Sentry 26.3.1 is on Django 5.2.
+      #
+      # The version matters. A Django 5.x `URLField` completes a schemeless address to `http://`
+      # and a 6.x one to `https://`, so testing on 6.x while shipping on 5.x is how a bug that
+      # sent the service account's password over plaintext HTTP got past a green test suite once
+      # already. The `<6` bound in pyproject.toml is what stops that; a major bump would raise it
+      # straight through, so major bumps are not offered.
+      - dependency-name: django
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
