@@ -50,7 +50,7 @@ dev = [
     # Django only for the installation-form tests; at runtime it arrives with sentry. The <6
     # bound is mandatory: a Django 5.x `URLField` completes a schemeless address to `http://`,
     # a 6.x one to `https://`, and production (Sentry 26.3.1) is on Django 5.2.
-    "django>=5.2.11,<6",
+    "django>=6.0.7,<7",
 ]
 # There is deliberately no `sentry` dependency group: Sentry cannot be installed as a package at
 # all (not on PyPI above 23.7.1, and its source tree has no build backend). The tests of the Sentry
