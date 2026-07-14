@@ -7,6 +7,7 @@ Sentry objects and translating errors.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
@@ -23,6 +24,8 @@ from sentry_jaga.descriptions import build_description, build_title
 
 if TYPE_CHECKING:
     from sentry.models.group import Group
+
+logger = logging.getLogger("sentry_jaga.issues")
 
 
 @contextmanager
@@ -102,8 +105,7 @@ class JagaIssuesMixin(IssueBasicIntegration):
             if event is not None
             else ""
         )
-        sentry_url = absolute_uri(group.get_absolute_url(params={"referrer": "jaga_integration"}))
-        return build_description(sentry_url, group.culprit or "", body)
+        return build_description(self._sentry_url(group), group.culprit or "", body)
 
     def _defaults_from_group(self, group: Group | None) -> tuple[str, str]:
         """Pre-fill the task title and description with Sentry issue data."""
@@ -160,12 +162,51 @@ class JagaIssuesMixin(IssueBasicIntegration):
             return None
         return url
 
+    def _sentry_url(self, group: Group) -> str:
+        # The annotation is for mypy: `absolute_uri` is untyped without the Sentry sources.
+        url: str = absolute_uri(group.get_absolute_url(params={"referrer": "jaga_integration"}))
+        return url
+
     def get_link_issue_config(self, group: Group, **kwargs: Any) -> list[dict[str, Any]]:
         with as_integration_error():
             return issue_config.build_link_config(
                 self.get_client(),
                 kwargs.get("params") or {},
                 search_url=self._search_url(group),
+                # The group is in hand here and nowhere else: `after_link_issue` is handed the
+                # submitted form and nothing more. So the link travels to it inside the default
+                # of the comment field. See `issue_config._comment_field`.
+                sentry_url=self._sentry_url(group),
+            )
+
+    def after_link_issue(
+        self, external_issue: Any, data: dict[str, Any] | None = None, **kwargs: Any
+    ) -> None:
+        """Comment on a Jaga task that has just been linked to a Sentry issue.
+
+        The text is whatever stood in the link form's comment box — pre-filled with a link back
+        to the Sentry issue, and clearable, which is how a user opts out of a single comment.
+
+        A Jaga failure is swallowed, and that is a deliberate departure from Jira Server, which
+        lets it escape. It matters because of *when* this runs: the endpoint has already created
+        the `ExternalIssue` but has NOT yet created the `GroupLink`, so an exception here does
+        not merely lose the comment — it loses the link the user asked for, and leaves an
+        orphaned `ExternalIssue` behind. The link is the point; the comment is a courtesy.
+        """
+        comment = (data or {}).get("comment")
+        if not comment:
+            return
+
+        task_id = (getattr(external_issue, "metadata", None) or {}).get("task_id")
+        try:
+            issue_config.post_task_comment(
+                self.get_client(), external_issue.key, str(comment), task_id=task_id
+            )
+        except JagaError:
+            logger.warning(
+                "jaga.issues.link_comment_failed",
+                extra={"key": external_issue.key},
+                exc_info=True,
             )
 
     def get_issue(self, issue_id: str, **kwargs: Any) -> dict[str, Any]:

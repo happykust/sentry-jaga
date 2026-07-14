@@ -23,6 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   editing the note rewrites the comment it created rather than adding a second one. It is off
   by default because a Sentry note is internal discussion and the Jaga task may have a wider
   audience — the same default every issue integration in Sentry upstream uses.
+- **Linking an existing task now comments on it**, with a link back to the Sentry issue. The
+  text is pre-filled in the link form and is editable: clearing the box posts nothing, which is
+  why this needs no organization-wide setting of its own.
 
 ### Changed
 

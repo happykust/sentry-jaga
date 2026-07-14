@@ -18,6 +18,7 @@ from typing import Any
 from sentry_jaga.client.api import JagaClient
 from sentry_jaga.client.exceptions import JagaError
 from sentry_jaga.client.models import Attribute, Project, Status
+from sentry_jaga.descriptions import build_link_comment
 from sentry_jaga.fields import (
     ASSIGNEE_OBJECT_TYPE,
     DESCRIPTION_OBJECT_TYPE,
@@ -256,10 +257,42 @@ def create_task_from_form(client: JagaClient, form_data: dict[str, Any]) -> dict
     }
 
 
+def _comment_field(sentry_url: str | None) -> list[dict[str, Any]]:
+    """The comment posted on the task when it is linked — as an editable, clearable field.
+
+    Every issue integration upstream (Jira Server, GitHub, GitLab, Bitbucket) does exactly this,
+    and the shape is not an accident: `after_link_issue` is handed the form data and nothing
+    else — not the group, not the URL — so the only way the Sentry link can reach it is baked
+    into this field's default at render time, when the group *is* in hand.
+
+    That the field is editable is the feature, not a compromise: it doubles as the per-link
+    opt-out. Someone linking a task in a space where a Sentry URL means nothing to anybody just
+    clears the box, and no comment is posted — which is why this needs no organization-wide
+    toggle of its own.
+    """
+    if sentry_url is None:
+        return []
+    return [
+        {
+            "name": "comment",
+            "label": "Comment",
+            "type": "textarea",
+            "default": build_link_comment(sentry_url),
+            "required": False,
+            "autosize": True,
+            "maxRows": 10,
+            "help": "Posted on the Jaga task when it is linked. Clear it to post nothing.",
+        }
+    ]
+
+
 def build_link_config(
-    client: JagaClient, params: dict[str, Any], search_url: str | None = None
+    client: JagaClient,
+    params: dict[str, Any],
+    search_url: str | None = None,
+    sentry_url: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Fields of the link form: the space, and a way to pick a task in it.
+    """Fields of the link form: the space, a way to pick a task in it, and a comment.
 
     There are two ways to pick, and which one we get depends on something outside this package:
     whether the admin pointed `ROOT_URLCONF` at `sentry_jaga.urlconf` (see `urlconf.py`).
@@ -297,6 +330,7 @@ def build_link_config(
                     f"the search starts at {MIN_QUERY_LENGTH} characters."
                 ),
             },
+            *_comment_field(sentry_url),
         ]
 
     query = str(params.get("query") or "").strip()
@@ -329,6 +363,7 @@ def build_link_config(
             "required": True,
             "help": "If the list is empty, refine the search query above.",
         },
+        *_comment_field(sentry_url),
     ]
 
 

@@ -1,8 +1,11 @@
+import json
+
 import pytest
 
 pytest.importorskip("sentry")
 
 import responses
+from sentry.integrations.models.external_issue import ExternalIssue
 from sentry.silo.base import SiloMode
 from sentry.testutils.cases import APITestCase
 from sentry.testutils.silo import assume_test_silo_mode
@@ -364,3 +367,79 @@ class JagaIssuesTest(APITestCase):
         assert by_name["project"]["default"] == "1"
         assert by_name["issue_type"]["default"] == "10"
         assert not [c for c in responses.calls if "/v1/project/999/" in c.request.url]
+
+    # --- the comment posted when an existing task is linked --------------------------------
+
+    @responses.activate
+    def test_link_config_prefills_a_comment_linking_back_to_sentry(self) -> None:
+        self._mock_base()
+        config = self.installation.get_link_issue_config(self.group, params={"project": "1"})
+        by_name = {field["name"]: field for field in config}
+
+        default = by_name["comment"]["default"]
+        assert default.startswith("Linked to Sentry issue http")
+        assert str(self.group.id) in default
+        assert by_name["comment"]["required"] is False
+
+    @responses.activate
+    def test_after_link_issue_comments_on_the_task(self) -> None:
+        """`after_link_issue` is handed the submitted form and nothing else — no group, no URL.
+        The Sentry link reaches Jaga because it was baked into the comment field's default at
+        render time. The task id comes from `ExternalIssue.metadata`, so the task the endpoint
+        has just fetched is not fetched a second time."""
+        responses.add(responses.POST, f"{API}/v1/auth/login", json=AUTH_OK, status=200)
+        responses.add(responses.POST, f"{API}/v1/comment", json={"id": 42, "taskId": 500})
+        external_issue = ExternalIssue.objects.create(
+            organization_id=self.organization.id,
+            integration_id=self.integration.id,
+            key="PLT-500",
+            title="Login is broken",
+            metadata={"task_id": 500},
+        )
+
+        self.installation.after_link_issue(
+            external_issue, data={"comment": "Linked to Sentry issue https://sentry.io/i/1/"}
+        )
+
+        posted = [c for c in responses.calls if c.request.url.endswith("/v1/comment")]
+        assert json.loads(posted[0].request.body) == {
+            "taskId": 500,
+            "contentComment": "Linked to Sentry issue https://sentry.io/i/1/",
+            "attachIsPending": False,
+        }
+        # The task was never re-fetched: its id was already on the ExternalIssue.
+        assert not [c for c in responses.calls if "findExtendedWithFlexField" in c.request.url]
+
+    @responses.activate
+    def test_after_link_issue_posts_nothing_when_the_comment_is_cleared(self) -> None:
+        """Clearing the comment box is how a user declines the comment — that is why the feature
+        needs no organization-wide toggle."""
+        external_issue = ExternalIssue.objects.create(
+            organization_id=self.organization.id,
+            integration_id=self.integration.id,
+            key="PLT-500",
+            metadata={"task_id": 500},
+        )
+
+        self.installation.after_link_issue(external_issue, data={"comment": ""})
+        self.installation.after_link_issue(external_issue, data={})
+        self.installation.after_link_issue(external_issue)
+
+        # `responses` is active but nothing is registered: any HTTP call at all would raise.
+        assert len(responses.calls) == 0
+
+    @responses.activate
+    def test_a_failing_comment_does_not_lose_the_link(self) -> None:
+        """The endpoint creates the `ExternalIssue` before this runs and the `GroupLink` after it.
+        An exception here would therefore not merely lose the comment — it would lose the link the
+        user asked for and orphan the `ExternalIssue`. Jaga being down must not cost the link."""
+        responses.add(responses.POST, f"{API}/v1/auth/login", json=AUTH_OK, status=200)
+        responses.add(responses.POST, f"{API}/v1/comment", json={"message": "boom"}, status=500)
+        external_issue = ExternalIssue.objects.create(
+            organization_id=self.organization.id,
+            integration_id=self.integration.id,
+            key="PLT-500",
+            metadata={"task_id": 500},
+        )
+
+        self.installation.after_link_issue(external_issue, data={"comment": "hi"})

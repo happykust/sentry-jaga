@@ -925,6 +925,36 @@ def test_persisted_field_names_are_the_names_the_form_actually_emits() -> None:
     assert set(PERSISTED_FIELDS) <= names
 
 
+# --- the comment posted when an existing task is linked ------------------------------------
+
+
+def test_link_config_prefills_a_comment_pointing_back_at_sentry() -> None:
+    fields = build_link_config(
+        FakeClient(), {}, search_url="/search", sentry_url="https://sentry.io/issues/1/"
+    )
+    by_name = _by_name(fields)
+
+    assert by_name["comment"]["default"] == "Linked to Sentry issue https://sentry.io/issues/1/"
+    # It must be editable and optional — clearing it is how a user declines the comment.
+    assert by_name["comment"]["required"] is False
+    assert by_name["comment"]["type"] == "textarea"
+
+
+def test_link_config_prefills_the_comment_on_the_fallback_search_too() -> None:
+    """The link form has two shapes depending on whether the search endpoint is installed. The
+    comment must be offered in both — it is not a property of the search."""
+    fields = build_link_config(FakeClient(), {}, sentry_url="https://sentry.io/issues/1/")
+    by_name = _by_name(fields)
+
+    assert by_name["comment"]["default"] == "Linked to Sentry issue https://sentry.io/issues/1/"
+
+
+def test_link_config_offers_no_comment_without_a_sentry_url() -> None:
+    """No URL, no comment: a field pre-filled with "Linked to Sentry issue None" is worse than
+    no field at all."""
+    assert "comment" not in _by_name(build_link_config(FakeClient(), {}))
+
+
 # --- posting and editing comments ----------------------------------------------------------
 
 

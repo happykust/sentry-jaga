@@ -21,7 +21,8 @@ status you configured (and, optionally, comments on it).
   The space and task type you last filed into are **remembered per Sentry project**, so a team
   that always files into one space does not have to pick it again every time.
 - **Link an existing Jaga task** to a Sentry issue by task code, with search by title and
-  code.
+  code. A comment linking back to the Sentry issue is posted on the task — the text is
+  pre-filled in the link form, and you can reword it or clear it to post nothing.
 - **Status sync.** Resolving a Sentry issue **moves the linked task** to the status you chose
   (and reopening it moves the task back); a comment can be posted on top. You map onto a status
   *category* — Done / In progress / To do — and the concrete status is resolved per task from
@@ -104,6 +105,9 @@ than the Sentry issue. Forwarding it should be a decision an admin takes, not a 
 discover. (Every issue integration in Sentry upstream defaults this the same way.) With it on, a
 note becomes a comment as `<Author> wrote:` followed by the quoted text, and editing the note
 rewrites that comment rather than adding another.
+
+Note that the comment posted when you **link** an existing task is a separate thing and needs no
+setting: the link form pre-fills it and you can clear the box to post nothing.
 
 The two category settings offer **Done**, **In progress** and **To do** — the categories Jaga
 groups all of its statuses under. One setting covers every space: the concrete status is picked

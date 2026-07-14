@@ -44,3 +44,14 @@ def build_note_comment(author_name: str, text: str) -> str:
     if not quoted:
         return f"{author} wrote:"
     return f"{author} wrote:\n\n{quoted}"
+
+
+def build_link_comment(sentry_url: str) -> str:
+    """The comment posted on a Jaga task when an existing task is linked to a Sentry issue.
+
+    This is only the *default* of an editable field in the link form — the user may reword it or
+    clear it out entirely (see `issue_config.build_link_config`), exactly as in Jira Server. So
+    it has to read well on its own, with no other context, on a task whose watchers have never
+    heard of Sentry.
+    """
+    return f"Linked to Sentry issue {sentry_url}"

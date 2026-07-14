@@ -1,6 +1,7 @@
 from sentry_jaga.descriptions import (
     UNKNOWN_AUTHOR,
     build_description,
+    build_link_comment,
     build_note_comment,
     build_title,
 )
@@ -72,3 +73,10 @@ def test_note_comment_falls_back_when_the_author_is_unknown() -> None:
 
 def test_note_comment_of_an_empty_note_is_just_the_attribution() -> None:
     assert build_note_comment("Ivan", "") == "Ivan wrote:"
+
+
+# --- the comment posted when a task is linked ----------------------------------------------
+
+
+def test_link_comment_points_back_at_the_sentry_issue() -> None:
+    assert build_link_comment(URL) == f"Linked to Sentry issue {URL}"
