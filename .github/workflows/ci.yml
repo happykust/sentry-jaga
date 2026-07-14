@@ -18,7 +18,7 @@ jobs:
     name: Linters and types
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
@@ -31,7 +31,7 @@ jobs:
     name: Core unit tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
@@ -47,7 +47,7 @@ jobs:
     name: Types against the Sentry API
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
@@ -69,10 +69,10 @@ jobs:
       SENTRY_SRC: ${{ github.workspace }}/.sentry-src
     steps:
       - name: Check out sentry-jaga
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Check out the Sentry 26.3.1 sources (code only — there is nothing to pip install)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: getsentry/sentry
           ref: 26.3.1
