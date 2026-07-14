@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Linking searches every space at once.** Typing part of a code or a title now finds the task
+  wherever it lives (`POST /v1/globalSearch/findTaskList`) — Jaga's per-space search demands a
+  `projectId`, which is why the link form used to make you pick a space first.
 - **The Sentry event can be attached to the task** as a JSON file (`Attach the Sentry event to
   the task`, **off by default**). It is the event as Sentry itself serves it behind the "JSON"
   link on an event page (`Event.as_dict()`), and it therefore carries personal data — the user's
@@ -45,6 +48,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **The link form no longer asks for a space** (the search is global now), and its suggestions
+  read `code — title`: the global search returns a found task's space as `null`, and fetching it
+  per suggestion, per keystroke, is not worth the round trips. The search endpoint
+  (`/extensions/jaga/search/…`) no longer takes a `project` parameter.
 - The project is now fully in English: documentation, code comments and user-facing strings.
 - The tests of the Sentry layer now actually run against a real Sentry 26.3.1 (in Sentry's own
   environment — see CONTRIBUTING.md). The `sentry` dependency group is gone: it could never

@@ -313,7 +313,7 @@ class JagaIssuesMixin(IssueBasicIntegration):
             return issue_config.get_task_summary(self.get_client(), issue_id)
 
     def search_issues(self, query: str | None, **kwargs: Any) -> list[dict[str, Any]]:
+        # No space to scope the search by: linking searches all of Jaga at once (see
+        # `issue_config.build_link_config`).
         with as_integration_error():
-            return issue_config.search_task_summaries(
-                self.get_client(), kwargs.get("project_id"), query
-            )
+            return issue_config.search_task_summaries(self.get_client(), query)

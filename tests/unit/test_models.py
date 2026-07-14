@@ -1,6 +1,6 @@
 from datetime import UTC, datetime, timedelta
 
-from sentry_jaga.client.models import Attribute, Project, Status, TaskRef, TaskType, Token
+from sentry_jaga.client.models import Attribute, Project, Status, TaskType, Token
 
 AUTH_PAYLOAD = {
     "accessToken": "at",
@@ -69,11 +69,6 @@ def test_attribute_from_api_dictionary_and_multiple() -> None:
     assert attr.required is True
     assert attr.multiple is True
     assert attr.order_num == 2
-
-
-def test_task_ref_from_api() -> None:
-    ref = TaskRef.from_api({"id": 5, "code": "PLT-5", "title": "Login is broken"})
-    assert (ref.id, ref.code, ref.title) == (5, "PLT-5", "Login is broken")
 
 
 def test_status_from_api_reads_the_category_mnemonic() -> None:

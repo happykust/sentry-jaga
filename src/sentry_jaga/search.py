@@ -6,8 +6,9 @@ that URL on every keystroke — debounced, which is the whole point — as
 
     GET <url>?<values of every updatesForm field>&field=<field name>&query=<what was typed>
 
-The space select is an `updatesForm` field, so its value arrives here as `project`. Jaga cannot
-search without it: `/v1/task/searchByTitleCode` requires a `projectId`.
+The query is all this needs. It used to need a `project` as well, because Jaga's per-space search
+demands a `projectId` — which is why the link form used to open with a space select. The global
+search (`/v1/globalSearch/findTaskList`) has no such requirement, so the space is gone from both.
 
 The endpoint is only reachable if the admin has pointed `ROOT_URLCONF` at `sentry_jaga.urlconf`.
 When they have not, `get_link_issue_config` never puts a `url` on the field and the form falls
@@ -72,13 +73,6 @@ class JagaSearchEndpoint(IntegrationEndpoint):
                 status=400,
             )
 
-        project = request.GET.get("project")
-        if not (project or "").isdigit():
-            return Response(
-                {"detail": "project is a required parameter: Jaga searches within one space."},
-                status=400,
-            )
-
         choices: list[dict[str, str]] = []
         query = (request.GET.get("query") or "").strip()
 
@@ -89,10 +83,13 @@ class JagaSearchEndpoint(IntegrationEndpoint):
             installation = integration.get_installation(organization.id)
             try:
                 # `search_issues` is ours (issues.py) and already speaks Sentry's error dialect.
-                results = installation.search_issues(query, project_id=int(project))
+                # It searches every space: there is no `project` to pass any more.
+                results = installation.search_issues(query)
             except IntegrationError as exc:
                 return Response({"detail": str(exc)}, status=400)
 
+            # `code — title` and no more: the global search returns a task's space as null, and
+            # fetching it per hit, per keystroke, is not worth a line in a dropdown.
             choices = [
                 {"label": f"{task['key']} — {task['title']}", "value": task["key"]}
                 for task in results

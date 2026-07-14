@@ -11,6 +11,7 @@ import requests
 from sentry_jaga.client.auth import Cache, InMemoryCache, TokenManager
 from sentry_jaga.client.exceptions import JagaApiError, JagaError, error_from_response
 from sentry_jaga.client.models import Attribute, Project, Status, TaskRef, TaskType, Token
+from sentry_jaga.fields import extract_title
 
 API_PREFIX = "/external-api"
 STATUS_MODIFIER_TODO = 1
@@ -251,13 +252,35 @@ class JagaClient:
         result = self._authed("GET", f"/v1/task/findExtendedWithFlexField/code/{code}")
         return dict(result)
 
-    def search_tasks(self, project_id: int, text: str, *, size: int = 20) -> list[TaskRef]:
+    def search_tasks_globally(self, text: str, *, size: int = 20) -> list[TaskRef]:
+        """Search tasks across every space the service account can see.
+
+        This is what `/v1/task/searchByTitleCode` cannot do: that one demands a `projectId` and
+        searches inside one space, which is why linking used to make the user pick a space first.
+
+        Two things about this endpoint are worth knowing, both confirmed against a live instance:
+
+        * the spec declares the response as `array<TaskPageApiDto>`; what comes back is a single
+          page OBJECT. The spec is wrong — this follows the wire.
+        * a task in the results carries its title inside `attributes` (Jaga's EAV, same as
+          anywhere else), and its `projectId`/`projectCode`/`projectTitle` come back **null** —
+          so the space a task lives in simply is not in this answer. Hence `TaskRef.title` is
+          read out of the attributes, and the caller shows the code and the title, nothing more.
+
+        The body is the filter, and an empty list means "no filter" — the whole query is the
+        `query` parameter.
+        """
         payload = self._authed(
-            "GET",
-            "/v1/task/searchByTitleCode",
-            params={"projectId": project_id, "searchText": text, "page": 0, "size": size},
+            "POST",
+            "/v1/globalSearch/findTaskList",
+            params={"query": text, "page": 0, "size": size},
+            json=[],
         )
-        return [TaskRef.from_api(item) for item in payload.get("content", [])]
+        content = payload.get("content", []) if isinstance(payload, dict) else []
+        return [
+            TaskRef(id=int(raw["id"]), code=str(raw["code"]), title=extract_title(raw))
+            for raw in content
+        ]
 
     def attach_file(
         self, space_id: int, task_id: int, filename: str, content: bytes, content_type: str

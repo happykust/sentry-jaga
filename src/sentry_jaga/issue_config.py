@@ -380,31 +380,37 @@ def build_link_config(
     search_url: str | None = None,
     sentry_url: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Fields of the link form: the space, a way to pick a task in it, and a comment.
+    """Fields of the link form: a way to find a task — anywhere in Jaga — and a comment.
 
-    There are two ways to pick, and which one we get depends on something outside this package:
-    whether the admin pointed `ROOT_URLCONF` at `sentry_jaga.urlconf` (see `urlconf.py`).
+    There is deliberately no space select here. Linking used to open with one, because Jaga's
+    per-space search (`/v1/task/searchByTitleCode`) demands a `projectId`: you had to remember
+    which space the task lived in before you could look for it. The global search does not, so
+    the space is gone from the form — you type, and the task is found wherever it is.
+
+    The cost of that is honest and small: the global search returns a task's space as `null`
+    (see `JagaClient.search_tasks_globally`), so a suggestion can only read `code — title`.
+    Fetching each hit's space one by one, on every keystroke, to decorate a dropdown is not a
+    trade worth making.
+
+    Two ways to search, and which one we get depends on something outside this package: whether
+    the admin pointed `ROOT_URLCONF` at `sentry_jaga.urlconf` (see `urlconf.py`).
 
     * `search_url` given — the real thing. A `url` on a `select` field is what makes Sentry's
       frontend treat it as an async select: it calls the endpoint as the user types, with its
-      own debounce, and renders the results. No `query` field is needed, and no search runs
-      while the form is merely being rendered.
+      own debounce, and renders the results. No `query` field is needed, and no search — indeed
+      no call to Jaga at all — runs while the form is merely being rendered.
 
     * `search_url` is None — the fallback, and the only thing that worked before the endpoint
       existed. The query is a plain text field with `updatesForm`, so Sentry re-fetches the
       WHOLE config on every keystroke (there is no debounce on that path, and an external
       package cannot ship JS to add one). We soften it on the server: nothing is searched below
-      `MIN_QUERY_LENGTH`, and the list of spaces comes from the client's cache.
+      `MIN_QUERY_LENGTH`.
 
     The core must not know what a URL route is, let alone import `sentry`, so the caller
     (`issues.py`) resolves it and passes it down.
     """
-    projects = _require_projects(client)
-    project_id = _selected_id(params, "project", [p.id for p in projects])
-
     if search_url is not None:
         return [
-            _project_field(projects, project_id),
             {
                 "name": "externalIssue",
                 "label": "Task",
@@ -414,8 +420,8 @@ def build_link_config(
                 "url": search_url,
                 "required": True,
                 "help": (
-                    f"Start typing a task code or part of a title — "
-                    f"the search starts at {MIN_QUERY_LENGTH} characters."
+                    f"Start typing a task code or part of a title — every space is searched, "
+                    f"from {MIN_QUERY_LENGTH} characters."
                 ),
             },
             *_comment_field(sentry_url),
@@ -426,11 +432,10 @@ def build_link_config(
     if len(query) >= MIN_QUERY_LENGTH:
         choices = [
             (task.code, f"{task.code} — {task.title}")
-            for task in client.search_tasks(project_id, query, size=SEARCH_LIMIT)
+            for task in client.search_tasks_globally(query, size=SEARCH_LIMIT)
         ]
 
     return [
-        _project_field(projects, project_id),
         {
             "name": "query",
             "label": "Task search",
@@ -439,8 +444,8 @@ def build_link_config(
             "required": False,
             "updatesForm": True,
             "help": (
-                f"Enter a task code or part of a task title — the search starts "
-                f"at {MIN_QUERY_LENGTH} characters."
+                f"Enter a task code or part of a task title — every space is searched, "
+                f"from {MIN_QUERY_LENGTH} characters."
             ),
         },
         {
@@ -466,14 +471,17 @@ def get_task_summary(client: JagaClient, code: str) -> dict[str, Any]:
     }
 
 
-def search_task_summaries(
-    client: JagaClient, project_id: int | None, query: str | None
-) -> list[dict[str, Any]]:
-    if not project_id or not query:
+def search_task_summaries(client: JagaClient, query: str | None) -> list[dict[str, Any]]:
+    """Tasks matching the query, across every space — what the autocomplete endpoint serves.
+
+    No space to scope by, and none in the answer either: the suggestion is `code — title` and
+    nothing else. See `build_link_config`.
+    """
+    if not query:
         return []
     return [
         {"key": task.code, "title": task.title}
-        for task in client.search_tasks(int(project_id), query, size=SEARCH_LIMIT)
+        for task in client.search_tasks_globally(query, size=SEARCH_LIMIT)
     ]
 
 

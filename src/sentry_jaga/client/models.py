@@ -98,13 +98,18 @@ class Attribute:
 
 @dataclass(frozen=True, slots=True)
 class TaskRef:
+    """A task, reduced to what Sentry needs of it: the id, the code, the title.
+
+    There is no `from_api` here, unlike every other model: Jaga has no one DTO this maps from.
+    A create answers with a `TaskApiDto` that carries no title at all, and the global search
+    answers with a reduced DTO whose title is buried in the EAV `attributes` — so both callers
+    build a `TaskRef` from what they actually got (see `JagaClient.create_task` and
+    `JagaClient.search_tasks_globally`).
+    """
+
     id: int
     code: str
     title: str
-
-    @classmethod
-    def from_api(cls, payload: dict[str, Any]) -> TaskRef:
-        return cls(id=payload["id"], code=payload["code"], title=payload.get("title", ""))
 
 
 @dataclass(frozen=True, slots=True)

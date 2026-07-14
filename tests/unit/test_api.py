@@ -514,21 +514,63 @@ def test_get_task_by_code_returns_task(client: JagaClient) -> None:
 
 
 @responses.activate
-def test_search_tasks(client: JagaClient) -> None:
+def test_search_tasks_globally_searches_every_space(client: JagaClient) -> None:
+    """The answer is shaped exactly as a live instance returns it — which is NOT what the spec
+    says. The spec declares `array<TaskPageApiDto>`; the wire carries a single page object, and
+    a task's title lives in its EAV `attributes` rather than in a `title` key."""
     _mock_login()
     responses.add(
-        responses.GET,
-        f"{API}/v1/task/searchByTitleCode",
+        responses.POST,
+        f"{API}/v1/globalSearch/findTaskList",
         json={
-            "content": [{"id": 5, "code": "PLT-5", "title": "Login is broken", "typeRef": {}}],
+            "content": [
+                {
+                    "id": 5,
+                    "code": "PLT-5",
+                    # The live instance returns the space of a found task as null — every time.
+                    "projectId": None,
+                    "projectCode": None,
+                    "projectTitle": None,
+                    "attributes": [
+                        {
+                            "fieldId": 100,
+                            "value": "Login is broken",
+                            "objectTypeNameM": "task.task_title",
+                        }
+                    ],
+                }
+            ],
             "totalPages": 1,
             "pageNumber": 0,
             "totalElements": 1,
         },
         status=200,
     )
-    results = client.search_tasks(project_id=1, text="login")
-    assert [(r.code, r.title) for r in results] == [("PLT-5", "Login is broken")]
+
+    results = client.search_tasks_globally("login", size=5)
+    assert [(r.id, r.code, r.title) for r in results] == [(5, "PLT-5", "Login is broken")]
+
+    request = responses.calls[-1].request
+    assert "query=login" in request.url
+    assert "page=0" in request.url
+    assert "size=5" in request.url
+    # The body is the filter; an empty list means "no filter".
+    assert json.loads(request.body) == []
+
+
+@responses.activate
+def test_search_tasks_globally_falls_back_to_the_code_when_a_task_has_no_title(
+    client: JagaClient,
+) -> None:
+    _mock_login()
+    responses.add(
+        responses.POST,
+        f"{API}/v1/globalSearch/findTaskList",
+        json={"content": [{"id": 5, "code": "PLT-5", "attributes": []}], "totalPages": 1},
+        status=200,
+    )
+
+    assert [r.title for r in client.search_tasks_globally("login")] == ["PLT-5"]
 
 
 @responses.activate

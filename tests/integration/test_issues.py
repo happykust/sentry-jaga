@@ -363,23 +363,38 @@ class JagaIssuesTest(APITestCase):
 
     @responses.activate
     def test_link_config_offers_search(self) -> None:
-        self._mock_base()
+        responses.add(responses.POST, f"{API}/v1/auth/login", json=AUTH_OK, status=200)
         responses.add(
-            responses.GET,
-            f"{API}/v1/task/searchByTitleCode",
+            responses.POST,
+            f"{API}/v1/globalSearch/findTaskList",
             json={
-                "content": [{"id": 5, "code": "PLT-5", "title": "Login is broken", "typeRef": {}}],
+                "content": [
+                    {
+                        "id": 5,
+                        "code": "PLT-5",
+                        # The live instance returns the space of a found task as null.
+                        "projectId": None,
+                        "attributes": [
+                            {
+                                "fieldId": 100,
+                                "value": "Login is broken",
+                                "objectTypeNameM": "task.task_title",
+                            }
+                        ],
+                    }
+                ],
                 "totalPages": 1,
                 "pageNumber": 0,
                 "totalElements": 1,
             },
         )
-        config = self.installation.get_link_issue_config(
-            self.group, params={"project": "1", "query": "login"}
-        )
+        config = self.installation.get_link_issue_config(self.group, params={"query": "login"})
         by_name = {field["name"]: field for field in config}
+
         assert by_name["query"]["updatesForm"] is True
         assert by_name["externalIssue"]["choices"] == [("PLT-5", "PLT-5 — Login is broken")]
+        # No space to pick, and no list of spaces to fetch in order to offer one.
+        assert "project" not in by_name
 
     def test_issue_url(self) -> None:
         assert self.installation.get_issue_url("PLT-500") == f"{BASE}/browse/PLT-500"
@@ -486,8 +501,8 @@ class JagaIssuesTest(APITestCase):
 
     @responses.activate
     def test_link_config_prefills_a_comment_linking_back_to_sentry(self) -> None:
-        self._mock_base()
-        config = self.installation.get_link_issue_config(self.group, params={"project": "1"})
+        responses.add(responses.POST, f"{API}/v1/auth/login", json=AUTH_OK, status=200)
+        config = self.installation.get_link_issue_config(self.group, params={})
         by_name = {field["name"]: field for field in config}
 
         default = by_name["comment"]["default"]

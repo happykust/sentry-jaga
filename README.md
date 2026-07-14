@@ -23,9 +23,10 @@ status you configured (and, optionally, comments on it).
   Every task filed from Sentry is **labelled** (`sentry` by default), so the whole lot can be
   found in Jaga with one filter. The label is created on first use; clear the setting to file
   tasks without one.
-- **Link an existing Jaga task** to a Sentry issue by task code, with search by title and
-  code. A comment linking back to the Sentry issue is posted on the task — the text is
-  pre-filled in the link form, and you can reword it or clear it to post nothing.
+- **Link an existing Jaga task** to a Sentry issue: type part of a code or a title and the task
+  is found **across every space at once** — no space to pick first. A comment linking back to the
+  Sentry issue is posted on the task; the text is pre-filled in the link form, and you can reword
+  it or clear it to post nothing.
 - **Attach the Sentry event to the task** as a JSON file — the same payload Sentry shows behind
   the "JSON" link on an event. **Off by default**, because an event carries personal data; see
   [Sync settings](#sync-settings).
@@ -165,9 +166,11 @@ is cached in Sentry's Django cache.
   every later one reuses it. The id is **merged** into the `Label` cell of the create, so labels
   you picked in the form yourself are kept — the automatic one is added to them, not put in
   their place. A task type with no label attribute is filed without a label.
-- **Link.** A task is searched by title or code (`GET /v1/task/searchByTitleCode`, starting
-  from 3 characters of the query), then resolved by code
-  (`GET /v1/task/findExtendedWithFlexField/code/{taskCode}`).
+- **Link.** A task is searched across **all** spaces at once
+  (`POST /v1/globalSearch/findTaskList`, starting from 3 characters of the query), then resolved
+  by code (`GET /v1/task/findExtendedWithFlexField/code/{taskCode}`). The link form has no space
+  select: Jaga's per-space search (`searchByTitleCode`) requires a `projectId`, the global one
+  does not.
 
   How you search depends on whether `ROOT_URLCONF` is set (step 3 of the installation). With
   it, the "Task" field is an autocomplete backed by the package's own endpoint
@@ -240,6 +243,11 @@ the package creates no tables of its own.
   Tasks created from an issue by hand are unaffected.
 - **The sync is one-way, Sentry → Jaga.** Inbound Jaga → Sentry webhooks are not supported:
   changes made on the Jaga side do not reach Sentry.
+- **The link suggestions do not show which space a task is in.** They read `code — title` and no
+  more. Jaga's global search returns a found task's `projectId`, `projectCode` and `projectTitle`
+  as `null` — the space simply is not in the answer — and reading it back would mean one extra
+  request per suggestion, on every keystroke. The code prefix usually names the space anyway
+  (`PLT-500`), and the task's full card is one click away in Jaga once it is linked.
 - **The live search when linking needs one line of config.** Autocomplete requires an HTTP
   endpoint, and Sentry offers an out-of-tree package no hook to add a route with. The package
   ships one anyway, as a `ROOT_URLCONF` you can point Sentry at (step 3 of the installation).

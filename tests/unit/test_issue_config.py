@@ -140,7 +140,7 @@ class FakeClient:
         self.created: dict[str, Any] | None = None
         self.comments: list[tuple[int, str]] = []
         self.updated_comments: list[tuple[int, int, str]] = []
-        self.searches: list[tuple[int, str]] = []
+        self.searches: list[str] = []
         self.attributes_requested: list[tuple[int, int]] = []
         self.users_requested: list[int] = []
         self.labels_requested = 0
@@ -193,8 +193,8 @@ class FakeClient:
         task["code"] = code
         return task
 
-    def search_tasks(self, project_id: int, text: str, *, size: int = 20) -> list[TaskRef]:
-        self.searches.append((project_id, text))
+    def search_tasks_globally(self, text: str, *, size: int = 20) -> list[TaskRef]:
+        self.searches.append(text)
         return [TaskRef(id=5, code="PLT-5", title="Login is broken")]
 
     def create_comment(self, task_id: int, content: str) -> dict[str, Any]:
@@ -713,16 +713,43 @@ def test_does_not_warn_when_system_attributes_are_present(
 # --- link, search, sync ----------------------------------------------------
 
 
-def test_link_config_searches_when_query_given() -> None:
-    fields = build_link_config(FakeClient(), {"project": "1", "query": "login"})
+def test_link_config_searches_every_space_at_once() -> None:
+    """The feature: no space to pick first. Jaga's per-space search demands a `projectId`, which
+    is why linking used to open with a space select; the global search does not."""
+    client = FakeClient()
+    fields = build_link_config(client, {"query": "login"})
     by_name = _by_name(fields)
 
+    assert client.searches == ["login"]
     assert by_name["query"]["updatesForm"] is True
     assert by_name["externalIssue"]["choices"] == [("PLT-5", "PLT-5 — Login is broken")]
 
 
+def test_link_config_no_longer_asks_for_a_space() -> None:
+    """The space select is gone from BOTH shapes of the form — and with it the only reason the
+    link form ever had to ask Jaga for the list of spaces."""
+    client = FakeClient(projects=[])
+
+    fallback = _by_name(build_link_config(client, {"query": "login"}))
+    live = _by_name(build_link_config(client, {}, search_url="/extensions/jaga/search/o/1/"))
+
+    assert "project" not in fallback
+    assert "project" not in live
+    # A service account with no spaces at all can still link a task it can see.
+    assert fallback["externalIssue"]["choices"] == [("PLT-5", "PLT-5 — Login is broken")]
+
+
+def test_link_config_shows_the_code_and_the_title_only() -> None:
+    """The global search returns a task's `projectId`/`projectCode`/`projectTitle` as null, and
+    reading each hit's space back — one fetch per suggestion, per keystroke — is not worth a word
+    in a dropdown. So a suggestion is `code — title`."""
+    by_name = _by_name(build_link_config(FakeClient(), {"query": "login"}))
+
+    assert by_name["externalIssue"]["choices"] == [("PLT-5", "PLT-5 — Login is broken")]
+
+
 def test_link_config_without_query_has_no_choices() -> None:
-    by_name = _by_name(build_link_config(FakeClient(), {"project": "1"}))
+    by_name = _by_name(build_link_config(FakeClient(), {}))
     assert by_name["externalIssue"]["choices"] == []
 
 
@@ -733,7 +760,7 @@ def test_link_config_does_not_search_below_min_query_length() -> None:
     client = FakeClient()
     short = "l" * (MIN_QUERY_LENGTH - 1)
 
-    by_name = _by_name(build_link_config(client, {"project": "1", "query": short}))
+    by_name = _by_name(build_link_config(client, {"query": short}))
 
     assert client.searches == []
     assert by_name["externalIssue"]["choices"] == []
@@ -743,20 +770,20 @@ def test_link_config_searches_from_min_query_length() -> None:
     client = FakeClient()
     enough = "l" * MIN_QUERY_LENGTH
 
-    by_name = _by_name(build_link_config(client, {"project": "1", "query": enough}))
+    by_name = _by_name(build_link_config(client, {"query": enough}))
 
-    assert client.searches == [(1, enough)]
+    assert client.searches == [enough]
     assert by_name["externalIssue"]["choices"] == [("PLT-5", "PLT-5 — Login is broken")]
 
 
 def test_link_config_ignores_whitespace_only_query() -> None:
     client = FakeClient()
-    build_link_config(client, {"project": "1", "query": "   "})
+    build_link_config(client, {"query": "   "})
     assert client.searches == []
 
 
 def test_link_config_help_states_the_minimum_query_length() -> None:
-    by_name = _by_name(build_link_config(FakeClient(), {"project": "1"}))
+    by_name = _by_name(build_link_config(FakeClient(), {}))
     assert str(MIN_QUERY_LENGTH) in by_name["query"]["help"]
 
 
@@ -773,7 +800,7 @@ def test_link_config_with_a_search_url_builds_an_async_select() -> None:
     """
     client = FakeClient()
 
-    fields = build_link_config(client, {"project": "1"}, search_url="/extensions/jaga/search/o/1/")
+    fields = build_link_config(client, {}, search_url="/extensions/jaga/search/o/1/")
     by_name = _by_name(fields)
 
     external_issue = by_name["externalIssue"]
@@ -781,18 +808,14 @@ def test_link_config_with_a_search_url_builds_an_async_select() -> None:
     assert external_issue["type"] == "select"
     assert "query" not in by_name
 
-    # The space select stays, and stays `updatesForm`: its value is what the frontend sends to
-    # the endpoint as `?project=`, and Jaga cannot search without a space.
-    assert by_name["project"]["updatesForm"] is True
-
-    # Nothing is searched while the form is merely being rendered — that is the endpoint's job.
+    # Rendering the form now costs NOTHING: no search, and not even the list of spaces.
     assert client.searches == []
 
 
 def test_link_config_without_a_search_url_keeps_the_updates_form_search() -> None:
     """The endpoint is only mounted if the admin set `ROOT_URLCONF`. Without it the form must
     still work — the old `query` + `updatesForm` behaviour, not a dead select."""
-    by_name = _by_name(build_link_config(FakeClient(), {"project": "1", "query": "login"}))
+    by_name = _by_name(build_link_config(FakeClient(), {"query": "login"}))
 
     assert "url" not in by_name["externalIssue"]
     assert by_name["query"]["updatesForm"] is True
@@ -807,13 +830,13 @@ def test_get_task_summary() -> None:
 
 
 def test_search_task_summaries() -> None:
-    assert search_task_summaries(FakeClient(), 1, "login") == [
+    assert search_task_summaries(FakeClient(), "login") == [
         {"key": "PLT-5", "title": "Login is broken"}
     ]
 
 
 def test_search_task_summaries_without_query_is_empty() -> None:
-    assert search_task_summaries(FakeClient(), 1, "") == []
+    assert search_task_summaries(FakeClient(), "") == []
 
 
 def test_status_comment_distinguishes_resolution() -> None:
