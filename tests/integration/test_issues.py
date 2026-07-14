@@ -21,6 +21,12 @@ pytestmark = [requires_snuba]
 # The IP address of the user the event was captured from — the thing `sentry:scrub_ip_address`
 # exists to keep out of Sentry, and therefore out of Jaga.
 CUSTOMER_IP = "203.0.113.7"
+# A field an admin has named in `sentry:sensitive_fields`, and one nobody named. Both are
+# deliberately meaningless to Sentry's DEFAULT rules (which already catch `password`, `token`,
+# `authorization` and friends): only a custom setting can tell the two apart, so a test built on
+# them proves that the custom setting is honoured — not that the defaults happen to fire.
+SECRET_FIELD = "internal_customer_ref"
+KEPT_FIELD = "widget_count"
 
 BASE = "https://jaga.example.com"
 API = f"{BASE}/external-api"
@@ -602,10 +608,18 @@ class JagaEventAttachmentTest(APITestCase):
                 "event_id": "a" * 32,
                 "message": "Login is broken",
                 "timestamp": before_now(minutes=1).isoformat(),
-                # The very thing the toggle exists for: an event carries personal data.
+                # Everything the toggle exists for: an event is full of personal data, and it
+                # holds the same IP address in four different places.
                 "user": {"email": "customer@example.com", "ip_address": CUSTOMER_IP},
-                # Span tags carry the IP a second time — and, unlike everything else, they carry
-                # it straight through Relay's ingest-time scrubbing. See the scrubbing tests.
+                "request": {
+                    "url": "http://app.example.com/login",
+                    "method": "POST",
+                    "env": {"REMOTE_ADDR": CUSTOMER_IP},
+                    "headers": [["X-Forwarded-For", CUSTOMER_IP], ["User-Agent", "curl"]],
+                    # `SECRET_FIELD` is what an admin would name in `sentry:sensitive_fields`;
+                    # `KEPT_FIELD` is the control — nothing must touch it.
+                    "data": {SECRET_FIELD: "s3kr1t", KEPT_FIELD: "hello"},
+                },
                 "spans": [
                     {
                         "span_id": "aaaaaaaaaaaaaaaa",
@@ -703,74 +717,107 @@ class JagaEventAttachmentTest(APITestCase):
         # ...personal data and all. This is precisely why the toggle is off by default.
         assert b"customer@example.com" in body
 
-    # --- the project's IP scrubbing ---------------------------------------------------------
+    # --- the project's privacy settings -----------------------------------------------------
     #
-    # A project (or its whole organization) can tell Sentry to keep no IP addresses. Relay honours
-    # that at ingest — but only for events ingested after the setting was turned on, and even then
-    # it never reaches `spans[].sentry_tags`, which are derived after its pass.
+    # The attachment goes through `sentry.relay.datascrubbing.scrub_data` — Sentry's OWN scrubber,
+    # the same Relay engine, and the same rules, that clean an event as it comes into Sentry. So
+    # the file honours every privacy setting of the project and the organization: the IP scrubbing,
+    # the sensitive fields, the default rules, and the PII config an admin wrote by hand. Scrubbing
+    # of our own could only ever cover the fields we happened to think of.
     #
-    # Sentry patches over the span tags on the way out, in `EventJsonEndpoint`; we do the same, and
-    # we also null `user.ip_address`, which that endpoint shows. That is a deliberate divergence:
-    # the endpoint shows an event to someone already inside Sentry and already authorized, while
-    # this file leaves Sentry for a tracker whose audience the Sentry admin does not control.
+    # It runs against the STORED event, which makes it stricter than Sentry's own JSON page for
+    # free: Relay only ever cleaned events that arrived *after* a setting was turned on, and the
+    # page still shows the addresses in the older ones.
     #
-    # Note what the test harness does NOT do: `store_event` goes through EventManager, not Relay,
-    # so nothing here is scrubbed at ingest whatever the setting says. That is what makes these
-    # tests honest — the fixture always carries the address, so anything missing from the upload
-    # was taken out by us, and the "off" tests prove the fixture is not simply empty.
+    # Note what the harness does NOT do: `store_event` goes through EventManager, not Relay, so
+    # nothing is scrubbed at ingest here whatever the settings say. The fixture therefore always
+    # carries the secrets in full — anything missing from the upload was taken out on the way out,
+    # and the "nothing configured" test below proves the fixture is not simply empty.
 
     @responses.activate
     def test_the_ips_are_scrubbed_when_the_project_asks_for_it(self) -> None:
+        """Every one of the four places this event carries the customer's address."""
         self._mock_jaga()
         self.installation.update_organization_config({"attach_event": True})
         self.project.update_option("sentry:scrub_ip_address", True)
 
         self.installation.create_issue(self._form_data())
 
-        # In the span tags, Sentry's own replacement verbatim (`EventJsonEndpoint`): the `user`
-        # tag stays, the address in it goes, `user.ip` goes altogether — and a tag that is not an
-        # address is left exactly as it was.
-        assert self._uploaded_span_tags() == {"transaction": "GET /login", "user": "ip:[ip]"}
+        event = self._uploaded_event()
+        assert event["user"]["ip_address"] is None
+        assert event["request"]["env"]["REMOTE_ADDR"] is None
+        assert event["request"]["headers"] == [["X-Forwarded-For", "[ip]"], ["User-Agent", "curl"]]
+        # Sentry's scrubber NULLS an address field and rewrites an address embedded in a longer
+        # string. (`EventJsonEndpoint` deletes the `user.ip` key instead of nulling it — same
+        # effect, and the scrubber's own form is the one to follow.)
+        assert self._uploaded_span_tags() == {
+            "transaction": "GET /login",
+            "user": "ip:[ip]",
+            "user.ip": None,
+        }
 
-        # And on the user, where Sentry's own JSON view would have shown the address: nulled, the
-        # way Sentry's scrubbing nulls it, so the file looks like one ingested under the setting.
-        user = self._uploaded_event()["user"]
-        assert user["ip_address"] is None
-        # The setting is about IP addresses and nothing else. The email still travels — that is
-        # the whole reason this attachment is off by default.
-        assert user["email"] == "customer@example.com"
-
+        # Not one of them survives anywhere in the file — headers and span tags included.
         assert CUSTOMER_IP.encode() not in bytes(self._uploads()[0].request.body)
+
+        # The setting is about IP addresses and nothing else: the email still travels. That is the
+        # whole reason this attachment is off by default.
+        assert event["user"]["email"] == "customer@example.com"
 
     @responses.activate
     def test_the_ips_are_scrubbed_when_the_organization_requires_it(self) -> None:
         """The organization-wide setting overrules the project, and must be honoured too — which
-        is why the gate is Sentry's own `get_datascrubbing_settings` and not one `get_option`."""
+        it is, for free, because the rules come from Sentry's own scrubber."""
         self._mock_jaga()
         self.installation.update_organization_config({"attach_event": True})
         self.organization.update_option("sentry:require_scrub_ip_address", True)
 
         self.installation.create_issue(self._form_data())
 
-        assert self._uploaded_span_tags() == {"transaction": "GET /login", "user": "ip:[ip]"}
         assert self._uploaded_event()["user"]["ip_address"] is None
+        assert CUSTOMER_IP.encode() not in bytes(self._uploads()[0].request.body)
 
     @responses.activate
-    def test_the_ips_survive_when_the_project_does_not_ask(self) -> None:
-        """The other half, and the one that makes the tests above mean something: with the setting
-        off, every address is there — so a green test above is the scrub working, not the fixture
-        being empty."""
+    def test_a_sensitive_field_the_admin_named_is_scrubbed(self) -> None:
+        """The gap that hand-written scrubbing left wide open, and the reason this now goes through
+        Sentry's scrubber: an admin who told Sentry to strip a field must not find it in plain text
+        on a Jaga task, in a tracker with a wider audience than the Sentry issue.
+
+        The field is deliberately one Sentry's DEFAULT rules know nothing about, so a green test
+        here is the admin's own setting being honoured — not the defaults happening to fire.
+        """
+        self._mock_jaga()
+        self.installation.update_organization_config({"attach_event": True})
+        self.project.update_option("sentry:sensitive_fields", [SECRET_FIELD])
+
+        self.installation.create_issue(self._form_data())
+
+        body = self._uploaded_event()["request"]["data"]
+        assert body[SECRET_FIELD] == "[Filtered]"
+        assert b"s3kr1t" not in bytes(self._uploads()[0].request.body)
+        # And only that field: a scrubber that ate the whole request body would "pass" the line
+        # above while destroying the point of attaching the event at all.
+        assert body[KEPT_FIELD] == "hello"
+
+    @responses.activate
+    def test_nothing_is_scrubbed_that_the_project_did_not_ask_for(self) -> None:
+        """The control, and the one that makes the three tests above mean something: with nothing
+        configured, every secret is in the file — so a green test above is the scrubber working,
+        not an empty fixture."""
         self._mock_jaga()
         self.installation.update_organization_config({"attach_event": True})
 
         self.installation.create_issue(self._form_data())
 
+        event = self._uploaded_event()
+        assert event["user"]["ip_address"] == CUSTOMER_IP
+        assert event["request"]["env"]["REMOTE_ADDR"] == CUSTOMER_IP
+        assert event["request"]["data"][SECRET_FIELD] == "s3kr1t"
+        assert event["request"]["data"][KEPT_FIELD] == "hello"
         assert self._uploaded_span_tags() == {
             "transaction": "GET /login",
             "user.ip": CUSTOMER_IP,
             "user": f"ip:{CUSTOMER_IP}",
         }
-        assert self._uploaded_event()["user"]["ip_address"] == CUSTOMER_IP
 
     @responses.activate
     def test_a_task_filed_by_an_alert_rule_gets_no_attachment(self) -> None:

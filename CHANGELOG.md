@@ -16,15 +16,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   email, request headers and body — which is why an admin has to turn it on deliberately. A failed
   upload is logged and swallowed: the task is already created by then.
 
-  The attachment **honours the project's IP scrubbing**, and is deliberately stricter about it
-  than Sentry itself. With *Prevent Storing of IP Addresses* on (or required organization-wide),
-  `user.ip_address` is nulled and the addresses in `spans[].sentry_tags` are stripped before the
-  file leaves. The span tags need it because Sentry's ingest-time scrubbing never reaches them —
-  its own JSON view strips them on the way out for the same reason. `user.ip_address` needs it for
-  events stored *before* the setting was turned on: Sentry never cleaned those, and its JSON view
-  shows the address. That page is one authorized person reading one event inside Sentry; this file
-  is an export into a tracker with a wider audience, so the admin's "no IP addresses" wins over
-  matching the UI. Nothing but IP addresses is stripped — see the README.
+  The attachment is run through **Sentry's own data scrubber** (`sentry.relay.datascrubbing.
+  scrub_data`) before it is uploaded — the same Relay engine, with the same rules, that cleans an
+  event as it arrives in Sentry. It therefore honours *every* privacy setting of the project and
+  the organization: IP scrubbing, additional sensitive fields, the default data-scrubbing rules,
+  and the advanced PII rules an admin wrote by hand. Scrubbing of our own would only ever have
+  covered the fields we thought of — an admin who told Sentry to strip `authorization` would have
+  found it in plain text on a Jaga task.
+
+  Because the rules are applied to the *stored* event rather than on ingest, this is **stricter
+  than Sentry's own "JSON" view of an event**: Sentry never cleaned the events that were stored
+  before a setting was turned on, and that page still shows what is in them. A page is one
+  authorized person reading one event inside Sentry; this file is an export into a tracker with a
+  wider audience. A scrub that fails means no attachment at all — never an unscrubbed one.
 
   It does **not** apply to tasks filed by an alert rule. The rule modal renders the create form
   with no issue behind it and saves the result into the rule, so the hidden field that carries the

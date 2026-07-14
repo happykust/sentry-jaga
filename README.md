@@ -27,9 +27,9 @@ status you configured (and, optionally, comments on it).
   is found **across every space at once** — no space to pick first. A comment linking back to the
   Sentry issue is posted on the task; the text is pre-filled in the link form, and you can reword
   it or clear it to post nothing.
-- **Attach the Sentry event to the task** as a JSON file — the same payload Sentry shows behind
-  the "JSON" link on an event. **Off by default**, because an event carries personal data; see
-  [Sync settings](#sync-settings).
+- **Attach the Sentry event to the task** as a JSON file, run through Sentry's own data scrubber
+  first, so it honours the project's privacy settings. **Off by default**, because an event still
+  carries personal data; see [Sync settings](#sync-settings).
 - **Status sync.** Resolving a Sentry issue **moves the linked task** to the status you chose
   (and reopening it moves the task back); a comment can be posted on top. You map onto a status
   *category* — Done / In progress / To do — and the concrete status is resolved per task from
@@ -108,30 +108,35 @@ Organization Settings → Integrations → **Jaga** → Configure:
 | Label to put on tasks created from Sentry | `sentry` | Every task the integration files carries this label. Empty box = no label. |
 | Attach the Sentry event to the task | **off** | Attach the JSON of the issue's latest event to the task, as a file. |
 
-**The event attachment is off by default on purpose — the file contains personal data.** It is
-the event as Sentry stores it: the user's email, the request headers and body, cookies, and
-anything else your SDK sent. That is the same content Sentry shows behind the "JSON" link on an
-event page, but a Jaga task can have a much wider audience than a Sentry issue, and once a file is
-on a task it stays there. Turn this on only if that is acceptable.
+**The event attachment is off by default on purpose — the file contains personal data.** An event
+carries the user's email, the request body and headers, cookies, and anything else your SDK sent. A
+Jaga task can have a much wider audience than a Sentry issue, and once a file is on a task it stays
+there. Turn this on only if that is acceptable.
 
-**IP addresses are the exception: the attachment honours the project's IP scrubbing, and is
-stricter about it than Sentry's own JSON view.** With *Prevent Storing of IP Addresses* on for the
-project (or required for the whole organization), the attached file has:
+**The attachment is scrubbed by Sentry's own data scrubber before it leaves.** It goes through
+`sentry.relay.datascrubbing.scrub_data` — the same Relay engine, with the same rules, that cleans
+an event as it *arrives* in Sentry. So the file honours every privacy setting of the project and
+the organization, and not merely the ones this package happened to think of:
 
-- `user.ip_address` nulled — **even for events stored before you turned the setting on.** Sentry
-  cleans events at ingest, so older ones still hold the address, and its own JSON view shows it.
-  We do not: that page is one authorized person reading one event inside Sentry, while this file
-  is an *export* into a tracker whose audience you do not control, and it stays on the task for as
-  long as the task does. Turning the setting on means "we do not want IP addresses"; that intent
-  outranks matching the Sentry UI byte for byte.
-- the addresses in span tags removed (`user.ip` dropped, an `ip:<addr>` user tag rewritten to
-  `ip:[ip]`) — Sentry's ingest-time scrubbing never reaches those, which is why its JSON view
-  strips them on the way out too.
+- **Prevent Storing of IP Addresses** — `user.ip_address` and `request.env.REMOTE_ADDR` come out
+  null, addresses inside headers and span tags become `[ip]`.
+- **Additional Sensitive Fields** (`sentry:sensitive_fields`) — a field you named comes out
+  `[Filtered]`.
+- **Data Scrubber** and its default rules — passwords, tokens, API keys and the rest of Sentry's
+  defaults are filtered, as they are on ingest.
+- **Advanced Data Scrubbing** (`sentry:relay_pii_config`) — the PII rules you wrote by hand are
+  applied too, project rules and organization rules both.
 
-**Nothing but IP addresses is stripped.** The user's email, the request body, the headers, cookies
-— everything the setting does not cover travels to Jaga exactly as Sentry stored it. If you need
-more of it gone, scrub it at ingest (project settings → Security & Privacy): what Sentry never
-stored cannot be attached. One known gap is listed under [Limitations](#limitations).
+**It is stricter than Sentry's own "JSON" view of an event**, and that is deliberate. Sentry
+scrubs an event on the way *in*, so an event stored *before* you turned a setting on was never
+cleaned, and its JSON page still shows what is in it. Here the rules are applied to the stored
+event, at export time, so they cover every event however old. That page is one authorized person
+reading one event inside Sentry; this file leaves Sentry for a tracker whose audience you do not
+control, and it stays on the task for as long as the task does.
+
+**What the scrubber does not remove still travels.** By default that includes the user's email and
+the body of the request. If you need it gone, say so in the project's privacy settings — the
+attachment will then honour that, like everything else.
 
 It does **not** apply to tasks filed by an alert rule — see [Limitations](#limitations).
 
@@ -204,17 +209,19 @@ is cached in Sentry's Django cache.
   event page — and uploaded as `sentry-event-<event id>.json`
   (`POST /v1/attacher/file/create?projectId=…&taskId=…`, multipart).
 
-  Before it is uploaded, the event is scrubbed of IP addresses if the project (or the
-  organization) asks for it — `user.ip_address` is nulled and the addresses in
-  `spans[].sentry_tags` are removed. Whether it asked is read from Sentry's own
-  `get_datascrubbing_settings`, the very function whose output Sentry feeds to Relay, so an
-  organization-wide *Require IP scrubbing* counts too and we cannot drift from upstream on what
-  the setting means.
+  Before it is uploaded, the event is passed through `sentry.relay.datascrubbing.scrub_data` —
+  Sentry's own scrubber, with the project's and the organization's own rules (see
+  [Sync settings](#sync-settings)). What comes back is Relay's canonical form of the event, so it
+  is not byte-for-byte the `as_dict()` that went in: null-valued keys are dropped, the legacy
+  `message` alias is folded into `logentry` (whose `formatted`, and the event's `title`, keep the
+  text), and a `_meta` block records what was scrubbed.
 
   It happens **after** the task is created, and a failed upload is logged and swallowed: the task
   exists by then, and losing the create over an attachment would be a worse bug than losing the
-  attachment. A scrub that somehow failed, on the other hand, means **no attachment at all** — the
-  one place we deliberately do not copy the JSON view, which serves the event anyway.
+  attachment. A failing *scrub*, on the other hand, means **no attachment at all**: the scrub is
+  fail-closed, and an unscrubbed event is never the fallback. (Sentry's JSON view swallows a
+  failing scrub and serves the event anyway — defensible for a page, wrong for a file that leaves
+  the system.)
 
   The issue reaches the create through a **hidden field** in the form (`sentry_group_id`). Sentry
   hands `create_issue()` the submitted form and nothing else — no group, no event — and there is
@@ -259,15 +266,6 @@ the package creates no tables of its own.
   If a task type marks one of them as **required**, the create will fail with Jaga's own
   message naming the field, and the plugin logs a `required_attribute_not_supported` warning
   with its mnemonic. Either make the field optional in Jaga, or create such tasks by hand.
-- **The IP scrubbing of the attachment covers the dedicated address fields, not every address in
-  the event.** With IP scrubbing on, `user.ip_address`, `sdk.client_ip` (which Sentry drops itself)
-  and the span tags come out clean. What can still hold an address is an event **stored before you
-  turned the setting on**: Sentry cleaned nothing in it at ingest, so `request.env.REMOTE_ADDR`, a
-  forwarded-for header, or a `user` tag reading `ip:1.2.3.4` may survive in the attached file.
-  Events ingested *after* the setting was turned on have none of these — Sentry removed them
-  before storing. Reproducing Sentry's full IP-matching pass over every string of an event is not
-  something this package does; if the older events matter to you, do not turn the attachment on
-  until they have aged out.
 - **The event attachment does not work for tasks filed by an alert rule.** The rule modal renders
   the create form with no issue behind it (Sentry calls `get_create_issue_config(None, …)` there)
   and **saves whatever the form returns into the rule**. So the hidden field that carries the

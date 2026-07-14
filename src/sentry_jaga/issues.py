@@ -10,13 +10,12 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
-from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from django.urls import NoReverseMatch, reverse
 from sentry.integrations.mixins.issues import IssueBasicIntegration
 from sentry.models.group import Group
-from sentry.relay.datascrubbing import get_datascrubbing_settings
+from sentry.relay.datascrubbing import scrub_data
 from sentry.shared_integrations.exceptions import IntegrationError, IntegrationFormError
 from sentry.utils import json
 from sentry.utils.http import absolute_uri
@@ -197,56 +196,48 @@ class JagaIssuesMixin(IssueBasicIntegration):
         return group
 
     @staticmethod
-    def _scrubs_ip_addresses(project: Project) -> bool:
-        """Has this project (or its organization) told Sentry not to keep IP addresses?
+    def _event_json(event: GroupEvent, project: Project) -> bytes:
+        """The event, scrubbed by Sentry's own scrubber, as the bytes of a JSON file.
 
-        The answer is taken from `get_datascrubbing_settings` — the very function whose output
-        Sentry ships to Relay — and not from the two `get_option` calls it is made of. They are
-        the same two calls `EventJsonEndpoint` spells out by hand, and copying them here would
-        mean a third place to update the day upstream adds a third way of saying "no IPs".
+        `as_dict()` is the event's "normalized form for external consumers" — what Sentry itself
+        serves behind the JSON link on an event page (`EventJsonEndpoint`). The alternative,
+        `serialize(event, user, EventSerializer())`, is the shape the Sentry UI renders
+        (`entries[]`): it needs a user to serialize for — and on the alert-rule path there is no
+        user — and it reshapes the event for a frontend nobody will point at this file.
 
-        The ignore is for the run against the Sentry sources, where the function is unannotated
-        and strict mode forbids calling it (cf. `get_group_body`; this module opts out of
-        `warn_unused_ignores` for exactly that reason).
+        `scrub_data` is then the whole of the privacy story, and it is called UNCONDITIONALLY. It
+        is the same function, and the same Relay engine, that cleans an event as it comes into
+        Sentry: it applies the project's and the organization's `sentry:relay_pii_config` (the PII
+        rules an admin wrote by hand), their `sensitive_fields`, `scrub_data`, `scrub_defaults` and
+        `scrub_ip_address`. Passing it a project and letting it decide is the only way to be sure
+        we honour a setting we have never heard of — hand-written scrubbing of our own would cover
+        the fields we thought of on the day, and quietly export the rest. An admin who told Sentry
+        to strip `authorization` must not find it in plain text on a Jaga task.
+
+        Running it on the STORED event is also what makes this stricter than Sentry's own JSON
+        page, for free. Relay only ever cleaned the events that arrived *after* a setting was
+        turned on; the older ones still carry the address, and the page shows it. Here every rule
+        is applied to every event at export time, so `user.ip_address` and `request.env.REMOTE_ADDR`
+        come out null however old the event is. That page is one authorized person reading one
+        event inside Sentry; this file leaves Sentry for a tracker whose audience the admin does
+        not control.
+
+        What comes back is Relay's canonical form of the event, so it is not byte-for-byte the
+        `as_dict()` we handed in: keys whose value is null are dropped (`dist`, `release`,
+        `location` on a typical event), the legacy `message` alias is folded into `logentry`
+        (`logentry.formatted` and `title` keep the text), and a `_meta` block records what was
+        scrubbed. Nothing of substance is lost.
+
+        A scrub that raises attaches NOTHING: the exception escapes into `_attach_event`, which
+        logs it. That is a deliberate departure from `EventJsonEndpoint`, which swallows a failing
+        scrub and serves the event anyway — fail-open is a defensible trade for a page, and the
+        wrong one for a file we are about to push into another system.
         """
-        settings: dict[str, Any] = get_datascrubbing_settings(project)  # type: ignore[no-untyped-call]
-        return bool(settings.get("scrubIpAddresses", False))
-
-    def _event_json(self, event: GroupEvent, project: Project) -> bytes:
-        """The event as Sentry itself hands it to the outside world.
-
-        `as_dict()` is the event's "normalized form for external consumers", and it is exactly
-        what Sentry serves behind the JSON link on an event page (`EventJsonEndpoint`) — so what
-        lands on the Jaga task is the file a user would have downloaded by hand. This mirrors that
-        endpoint step for step, and the steps are not decoration:
-
-        * `datetime` is written out as an ISO-8601 string, as the endpoint writes it;
-        * the IP addresses are scrubbed when the project asks for it — from the span tags, which
-          Relay's ingest-time pass never reaches, and (going one step FURTHER than the endpoint)
-          from `user.ip_address`, which it does reach for new events but not for events stored
-          before an admin turned the setting on. A page inside Sentry may show those; a file we
-          push into another system may not. See `issue_config.scrub_ip_addresses`.
-
-        The alternative, `serialize(event, user, EventSerializer())`, is the shape the Sentry UI
-        renders (`entries[]`): it needs a user to serialize for — and on the alert-rule path there
-        is no user — and it reshapes the event for a frontend nobody will point at this file.
-
-        `sentry.utils.json` rather than the stdlib: `as_dict()` carries `datetime` objects (and
-        can carry sets and Decimals), which Sentry's encoder knows how to write and the stdlib's
-        raises on.
-
-        One thing is deliberately NOT mirrored: the endpoint wraps its scrub in a
-        `try/except Exception: capture_exception(...)` and then serves the event ANYWAY. That is
-        fail-open, which is a defensible trade for a page an authorized user is looking at, and
-        the wrong one for a file we are about to push into another system. A scrub that raises
-        here escapes into `_attach_event`, which logs it and attaches nothing at all.
-        """
-        data = event.as_dict()
-        if isinstance(data.get("datetime"), datetime):
-            data["datetime"] = data["datetime"].isoformat()
-        if self._scrubs_ip_addresses(project):
-            issue_config.scrub_ip_addresses(data)
-        return str(json.dumps(data)).encode()
+        # `dict(...)`: `scrub_data` hands back the Relay round-trip (`MutableMapping`), and the
+        # values in it are plain JSON types — orjson parsed them — so `json.dumps` has nothing
+        # exotic left to encode.
+        scrubbed = dict(scrub_data(project, event.as_dict()))
+        return str(json.dumps(scrubbed)).encode()
 
     def _attach_event(self, data: dict[str, Any], result: dict[str, Any]) -> None:
         """Attach the JSON of the issue's latest event to the task just created from it.
@@ -257,6 +248,10 @@ class JagaIssuesMixin(IssueBasicIntegration):
         raising would fail the create the user can see, over a file they may not even have noticed
         was coming. The catch is deliberately broad for the same reason: the event comes from
         Snuba/nodestore, and it is not worth enumerating every way a read of those can fail.
+
+        It is also what makes the scrubbing FAIL-CLOSED. `_event_json` scrubs before it serializes;
+        if that raises, the exception lands here, the warning is logged and NO file is attached.
+        An unscrubbed event is never the fallback.
         """
         key = result.get("key")
         try:
