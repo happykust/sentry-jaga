@@ -73,9 +73,21 @@ uv pip install --python "$SENTRY/.venv/bin/python" \
   --index-strategy unsafe-best-match \
   -r /tmp/sentry-reqs.txt
 
-# The lock pins xmlsec==1.3.14, whose libxml2 does not match the one lxml is built against.
-# Sentry's SAML2 provider imports xmlsec during django.setup(), so with 1.3.14 nothing boots.
-uv pip install --python "$SENTRY/.venv/bin/python" 'xmlsec>=1.3.16'
+# lxml and xmlsec each bundle their OWN copy of libxml2, and `import xmlsec` dies with
+# "lxml & xmlsec libxml2 library version mismatch" whenever the two copies disagree. Sentry's
+# SAML2 provider imports xmlsec during django.setup(), so when they do, NOTHING boots.
+#
+# Bumping xmlsec is not the fix — it only changes which two copies you get, and whether they
+# agree is luck (they did on the machine this was written on; they did not on a GitHub runner).
+# Build both from source instead: they then link the one libxml2 the machine actually has, and
+# there is nothing left for them to disagree about.
+sudo apt-get install -y libxml2-dev libxslt1-dev libxmlsec1-dev libxmlsec1-openssl pkg-config
+LXML_VERSION=$("$SENTRY/.venv/bin/python" -c 'import importlib.metadata as m; print(m.version("lxml"))')
+uv pip install --python "$SENTRY/.venv/bin/python" \
+  --no-binary lxml --no-binary xmlsec \
+  --reinstall-package lxml --reinstall-package xmlsec \
+  "lxml==$LXML_VERSION" 'xmlsec>=1.3.16'
+"$SENTRY/.venv/bin/python" -c 'import xmlsec'   # fails loudly here rather than in 68 tests
 
 # Sentry, editable, with its own tool — `uv pip install -e "$SENTRY"` does not work.
 cd "$SENTRY" && .venv/bin/python tools/fast_editable.py --path .
