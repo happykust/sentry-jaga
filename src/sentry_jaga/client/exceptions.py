@@ -36,8 +36,7 @@ class JagaServerError(JagaApiError):
 
 
 MESSAGE_KEYS = ("message", "error", "detail")
-# Depth guard: `_extract_message` unwraps a JSON string nested in a JSON string, and a body we
-# do not control must not be able to spin it.
+# `_extract_message` unwraps JSON nested inside JSON; a body we do not control must not spin it.
 MAX_UNWRAP_DEPTH = 3
 
 
@@ -61,13 +60,9 @@ def _as_json(value: str) -> Any:
 def _extract_message(body: Any) -> str:
     """The human-readable message of a Jaga error.
 
-    Jaga hides the real message one level down: the `error` key of the body holds not a
-    sentence but a JSON *string*, which in turn has the `message` we want (alongside a status
-    and a path nobody needs to read).
-
-    Taking `error` at face value would show the user that whole JSON sheet instead of the one
-    sentence in it that matters, so a message that itself parses as JSON is unwrapped in turn.
-    One that does not parse is returned as is — it is already the message.
+    Jaga hides it one level down: the body's `error` key holds a JSON *string*, which in turn
+    carries the `message`. So a message that itself parses as JSON is unwrapped again; one that
+    does not parse is already the message.
     """
     message = _message_from(body)
     if message is None:

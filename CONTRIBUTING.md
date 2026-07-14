@@ -1,9 +1,7 @@
 # Contributing
 
-Thanks for your interest in the project! Bug reports, ideas and pull requests are welcome.
-
-By taking part in the project you agree to abide by the
-[Code of Conduct](CODE_OF_CONDUCT.md).
+Bug reports, ideas and pull requests are welcome. By taking part in the project you agree to abide
+by the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## Local development
 
@@ -29,16 +27,16 @@ uv run pytest tests/unit
 Without Sentry installed, the tests in `tests/integration/` skip themselves
 (`pytest.importorskip("sentry")`), so `uv run pytest` is green in a plain checkout.
 
-The core (the Jaga client, the field mapping) must not import `sentry` — an isolation test
-checks that. Everything that knows about Sentry lives in the integration layer.
+The core (the Jaga client, the field mapping) must not import `sentry` — an isolation test checks
+that. Everything that knows about Sentry lives in the integration layer.
 
 ## Tests of the Sentry layer
 
-These exercise the integration against a **real Sentry 26.3.1**. There is no way to add
-Sentry to this project's environment: it is not on PyPI above 23.7.1, and its source tree is
-not installable either — no `[build-system]`, `version = "0.0.0"`, and it installs itself with
-`tools/fast_editable.py` rather than a build backend. So the tests run the other way round:
-inside **Sentry's own environment**, with Sentry's pytest pointed at our test directory.
+These exercise the integration against a **real Sentry 26.3.1**. Sentry cannot be added to this
+project's environment: it is not on PyPI above 23.7.1, and its source tree is not installable either
+(no `[build-system]`, `version = "0.0.0"`, and it installs itself with `tools/fast_editable.py`). So
+the tests run the other way round: inside **Sentry's own environment**, with Sentry's pytest pointed
+at our test directory.
 
 You need a checkout of Sentry at the supported tag and Docker. Set the two paths once:
 
@@ -48,19 +46,18 @@ git clone --depth 1 --branch 26.3.1 https://github.com/getsentry/sentry.git ../s
 export SENTRY=$(cd ../sentry && pwd)
 ```
 
-**1. Infrastructure** — four containers: Postgres and Redis (Sentry does not boot without
-them) plus Snuba and its ClickHouse. Snuba is there because `get_create_issue_config()`
-pre-fills the description from the issue's latest event, and `Group.get_latest_event()` has
-exactly one backend — the Snuba event store. No Kafka/Relay/Symbolicator: that is the event
-*ingest* path, and these tests never ingest an event. Details in `docker-compose.test.yml`.
+**1. Infrastructure** — four containers: Postgres and Redis (Sentry does not boot without them) plus
+Snuba and its ClickHouse, because `get_create_issue_config()` pre-fills the description from the
+issue's latest event and `Group.get_latest_event()` has exactly one backend, the Snuba event store.
+No Kafka/Relay/Symbolicator: that is the event *ingest* path, and these tests never ingest an event.
 
 ```bash
 docker compose -f "$JAGA/docker-compose.test.yml" up -d --wait
 ```
 
-**2. Sentry's environment.** Export its lock to plain pins and install them — run `uv pip`
-from a neutral directory (`/tmp`), because inside the checkout it would pick up Sentry's
-`[tool.uv]` block, which is tuned for Sentry's own image build.
+**2. Sentry's environment.** Export its lock to plain pins and install them — run `uv pip` from a
+neutral directory (`/tmp`), because inside the checkout it would pick up Sentry's `[tool.uv]` block,
+which is tuned for Sentry's own image build.
 
 ```bash
 cd "$SENTRY" && uv venv --python 3.13 .venv
@@ -96,11 +93,11 @@ cd "$SENTRY" && .venv/bin/python tools/fast_editable.py --path .
 cd /tmp && uv pip install --python "$SENTRY/.venv/bin/python" -e "$JAGA"
 ```
 
-**3. Run.** Every flag is load-bearing: `PYTHONPATH` because Sentry puts its repo-root
-`fixtures` package into `INSTALLED_APPS`; `-c` to take Sentry's pytest config (it carries
-`--nomigrations`); `-p` to load Sentry's pytest plugin, which configures Django and the silo
-databases — it normally comes from Sentry's `tests/conftest.py`, which we cannot load, because
-both repositories have a top-level `tests` package and Sentry's would shadow ours.
+**3. Run.** Every flag is load-bearing: `PYTHONPATH` because Sentry puts its repo-root `fixtures`
+package into `INSTALLED_APPS`; `-c` to take Sentry's pytest config (it carries `--nomigrations`);
+`-p` to load Sentry's pytest plugin, which configures Django and the silo databases — it normally
+comes from Sentry's `tests/conftest.py`, which we cannot load, because both repositories have a
+top-level `tests` package and Sentry's would shadow ours.
 
 ```bash
 cd "$SENTRY"
@@ -108,45 +105,39 @@ PYTHONPATH=$SENTRY .venv/bin/pytest \
   -c "$SENTRY/pyproject.toml" -p sentry.testutils.pytest "$JAGA/tests/integration"
 ```
 
-Expect **68 passed** (~2 min, plus a one-off test-DB creation). Nothing in the Sentry checkout
-is modified by any of this. `tests/integration/conftest.py` explains the two things the harness
-has to arrange itself: registering the provider in Sentry's integration manager (in production
-that is the `SENTRY_DEFAULT_INTEGRATIONS` line in `sentry.conf.py`) and re-creating the autouse
-fixtures of Sentry's root conftest.
+Expect **68 passed** (~2 min, plus a one-off test-DB creation). Nothing in the Sentry checkout is
+modified. `tests/integration/conftest.py` explains what the harness arranges itself: registering the
+provider in Sentry's integration manager (in production that is the `SENTRY_DEFAULT_INTEGRATIONS`
+line) and re-creating the autouse fixtures of Sentry's root conftest.
 
 Two things about this environment are easy to get wrong:
 
 - **Editable is not enough for entry points.** Code edits are picked up straight away, but the
-  `[project.entry-points]` table is *metadata*: it is baked into the `.dist-info` at install
-  time. Change it and nothing happens until you reinstall — `"$SENTRY/.venv/bin/pip" install -e
-  "$JAGA" --no-deps`. The `sentry.apps` entry point is what puts the package into
-  `INSTALLED_APPS`, which is what runs `JagaAppConfig.ready()` — and that is what registers the
-  alert-rule action.
-- **The search endpoint only exists under our urlconf.** `ROOT_URLCONF = "sentry_jaga.urlconf"`
-  is optional in production, so the tests do not set it globally; `tests/integration/test_search.py`
-  turns it on per-test with `override_settings`. That is deliberate: it lets the same file assert
-  the autocomplete *and* the fallback that must survive without the setting.
+  `[project.entry-points]` table is *metadata*, baked into the `.dist-info` at install time. Change
+  it and reinstall — `"$SENTRY/.venv/bin/pip" install -e "$JAGA" --no-deps`. The `sentry.apps` entry
+  point is what puts the package into `INSTALLED_APPS`, which runs `JagaAppConfig.ready()`, which
+  registers the alert-rule action.
+- **The search endpoint only exists under our urlconf.** `ROOT_URLCONF = "sentry_jaga.urlconf"` is
+  optional in production, so the tests do not set it globally; `tests/integration/test_search.py`
+  turns it on per-test with `override_settings`, which lets the same file assert the autocomplete
+  *and* the fallback that must survive without the setting.
 
-The same recipe runs in CI, in the `integration` job, and it blocks a merge like every other
-check.
+The same recipe runs in CI, in the `integration` job, and it blocks a merge.
 
 ## UI stand
 
-A local Sentry 26.3.1 **with its web UI**, with `sentry-jaga` installed into it. This is where
-the integration is checked by hand, in a browser.
+A local Sentry 26.3.1 **with its web UI**, with `sentry-jaga` installed into it, for checking the
+integration by hand in a browser.
 
-It exists because a whole layer of this project cannot be tested any other way. The install
-form, the Space → Task type → attributes cascade, the Ticket Rules modal, the task-search
-autocomplete, the settings screen — none of that is *our* rendering. We hand Sentry dictionaries
-that describe fields, and Sentry's React frontend decides what to draw from them. The unit tests
-cover the dictionaries; the Sentry-layer tests above cover the contracts (the provider registers,
-the endpoint answers, the sync fires). Neither can tell you that a field is mislabelled, that the
-cascade does not repopulate when the space changes, or that a required field renders without its
-asterisk. For that you have to look at it.
+It exists because Sentry's React frontend, not this package, renders the install form, the
+Space → Task type → attributes cascade, the Ticket Rules modal, the search autocomplete and the
+settings screen — we only hand Sentry the dictionaries that describe the fields. The unit tests
+cover the dictionaries and the Sentry-layer tests cover the contracts; neither can tell you that a
+field is mislabelled or that the cascade does not repopulate when the space changes.
 
-**Bring it up.** The stand is a supplement to `docker-compose.test.yml`, not a replacement — it
-reuses that project's Postgres, Redis, ClickHouse and Snuba over a shared network, so that one
-comes up first.
+**Bring it up.** The stand supplements `docker-compose.test.yml` rather than replacing it — it
+reuses that project's Postgres, Redis, ClickHouse and Snuba over a shared network, so that one comes
+up first.
 
 ```bash
 rm -rf dist && uv build                                   # the image installs dist/*.whl
@@ -167,15 +158,14 @@ docker compose -f docker-compose.ui.yml exec -T web sentry exec /seed.py
 
 Then <http://localhost:9000>, `admin@example.com` / `admin`. Worth a look:
 
-- **Settings → Integrations** — the catalogue entry, and the install form behind it (the cascade
-  lives here).
+- **Settings → Integrations** — the catalogue entry and the install form.
 - **The issue page** the seed script prints a link to — *Link Jaga Task* and *Create Jaga Task*,
-  which is where the search autocomplete and the field cascade actually get exercised.
-- **Alerts → Create Alert Rule** — the Ticket Rules action, which renders the same create form
-  with no issue behind it.
+  where the search autocomplete and the field cascade get exercised.
+- **Alerts → Create Alert Rule** — the Ticket Rules action, which renders the same create form with
+  no issue behind it.
 
-**The trap that will cost you an hour.** The image installs a *built wheel*, so editing the
-source changes nothing until you rebuild both it and the image:
+**The image installs a built wheel**, so editing the source changes nothing until you rebuild both
+it and the image:
 
 ```bash
 rm -rf dist && uv build
@@ -183,21 +173,20 @@ docker compose -f docker-compose.ui.yml build --no-cache web
 docker compose -f docker-compose.ui.yml up -d web worker
 ```
 
-`rm -rf dist` is not decoration: `uv build` does not clean the directory, the Dockerfile globs
-`dist/*.whl`, and two versions sitting there make the build fail with `ResolutionImpossible`.
+`rm -rf dist` matters: `uv build` does not clean the directory, the Dockerfile globs `dist/*.whl`,
+and two versions sitting there make the build fail with `ResolutionImpossible`.
 
-**Tear it down** in this order — the network belongs to the test project, so the UI project has
-to let go of it first:
+**Tear it down** in this order — the network belongs to the test project, so the UI project has to
+let go of it first:
 
 ```bash
 docker compose -f docker-compose.ui.yml down -v
 docker compose -f docker-compose.test.yml down -v
 ```
 
-**This is a local stand and nothing else.** The secret key is a fixed throwaway value committed
-in plain text in `docker/sentry/config.yml`, the superuser's password is `admin`, mail goes
-nowhere and every port is published on `127.0.0.1` only. It is not hardened, it is not meant to
-be, and none of it may be reused anywhere real.
+**This is a local stand and nothing else.** The secret key is a fixed throwaway value committed in
+plain text in `docker/sentry/config.yml`, the superuser's password is `admin`, mail goes nowhere and
+every port is published on `127.0.0.1` only. None of it may be reused anywhere real.
 
 ## Style
 
@@ -210,16 +199,12 @@ uv run ruff check . && uv run ruff format --check . && uv run mypy
 - Commit messages in English, on a single line, with no body
   (for example: `fix: refresh token before expiry`).
 
-The whole project is in English: documentation, code comments, and user-facing strings
-(field labels in the UI, error messages).
+The whole project is in English: documentation, code comments, and user-facing strings.
 
-The one exception is text we quote from Jaga verbatim — its error messages and the names of
-its entities. **Do not translate those.** They appear in the fixture of the error-unwrapping
-test and in the docstrings that explain why the space/type cells are injected, and they are
-deliberately kept byte-for-byte identical to what Jaga returns: someone who meets
-`Поле "Пространство" обязательно для заполнения` in the Sentry logs can grep the codebase for
-it and land on the explanation. Translating them would break that link and make the test stop
-checking Jaga's real response format.
+The one exception is text quoted from Jaga verbatim — its error messages and the names of its
+entities. **Do not translate those.** They are kept byte-for-byte identical to what Jaga returns, so
+that someone who meets `Поле "Пространство" обязательно для заполнения` in the Sentry logs can grep
+the codebase for it and land on the explanation.
 
 ## Pull request
 
@@ -227,33 +212,31 @@ checking Jaga's real response format.
 2. Add tests for any behaviour change.
 3. Make sure `ruff`, `mypy` and `pytest` are green.
 4. Update `CHANGELOG.md` — the `[Unreleased]` section.
-5. Open a PR and fill in the checklist from the template. Describe what changes and why; if
-   you are fixing a bug, include the steps to reproduce it.
+5. Open a PR and fill in the checklist from the template.
 
 CI runs the linters, the type checks and the tests on every PR.
 
 ## Type checking against the Sentry API
 
-By default `uv run mypy` does not see `sentry` (the package is not on PyPI), so all of its
-types decay to `Any` — a typo in the name of a Sentry method would not be caught.
+By default `uv run mypy` does not see `sentry` (the package is not on PyPI), so all of its types
+decay to `Any` — a typo in the name of a Sentry method would not be caught.
 
-To check the integration layer against the **real** Sentry 26.3.1 API, give mypy the Sentry
-sources (you do not need to install it — the code is enough):
+To check the integration layer against the **real** Sentry 26.3.1 API, give mypy the Sentry sources
+(you do not need to install it — the code is enough):
 
 ```bash
 git clone --depth 1 --branch 26.3.1 https://github.com/getsentry/sentry.git .sentry-src
 MYPYPATH=.sentry-src/src uv run mypy --follow-imports=silent
 ```
 
-That is exactly what the blocking "Types against the Sentry API" CI job does. Together with the
-Sentry layer tests above, it is what holds `integration.py`, `issues.py`, `sync.py`,
-`pipeline.py` and `metadata.py`: those modules import `sentry` at module level, so they are
-outside the unit run (and out of its coverage denominator) — mypy against the real sources is
-the only check on them that runs on every PR.
+That is what the blocking "Types against the Sentry API" CI job does. `integration.py`, `issues.py`,
+`sync.py`, `pipeline.py` and `metadata.py` import `sentry` at module level, so they are outside the
+unit run (and out of its coverage denominator) — mypy against the real sources is the only check on
+them that runs on every PR.
 
 ## Release
 
 Releases are cut by the maintainer: pushing a `v*` tag triggers `.github/workflows/release.yml`,
 which builds the distributions and publishes them to PyPI through trusted publishing (OIDC — no
-tokens are stored in this repository). Contributors do not need to do anything for a release; just
-add your entry to the `[Unreleased]` section of `CHANGELOG.md`.
+tokens are stored in this repository). Contributors just add their entry to the `[Unreleased]`
+section of `CHANGELOG.md`.

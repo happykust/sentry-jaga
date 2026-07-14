@@ -1,50 +1,24 @@
 """Harness for the integration tests: they run inside Sentry's own test environment.
 
-Two things have to be arranged that Sentry's pytest plugin does not do for us.
+Two things Sentry's pytest plugin does not do for us:
 
-1. REGISTERING THE PROVIDER.
-   `IntegrationTestCase` does not register the provider under test: it builds an
-   `IntegrationPipeline(provider_key=self.provider.key)`, and the pipeline looks the provider
-   up in `sentry.integrations.manager.default_manager` by key. In production that registration
-   is the line an admin puts in `sentry.conf.py`:
+1. REGISTERING THE PROVIDER. `IntegrationTestCase` looks the provider up in
+   `sentry.integrations.manager.default_manager` by key. `SENTRY_DEFAULT_INTEGRATIONS` — the
+   setting an admin would use in production — is read once by `initialize_app()`, before any
+   conftest could append to it, so we call `default_manager.register(...)` instead, exactly as
+   Sentry registers its own example providers. `trylast=True` is load-bearing: pluggy calls hooks
+   last-registered-first, so a plain `pytest_configure` here would run before `django.setup()`,
+   when `sentry.integrations.base` is not even importable.
 
-       SENTRY_DEFAULT_INTEGRATIONS = (
-           *SENTRY_DEFAULT_INTEGRATIONS,
-           "sentry_jaga.integration.JagaIntegrationProvider",
-       )
+2. THE AUTOUSE FIXTURES OF SENTRY'S ROOT CONFTEST, which `sentry.testutils.cases` relies on. It
+   cannot be loaded from here (both repositories have a top-level `tests` package, so
+   `-p tests.conftest` shadows ours), so the same fixtures are wired below out of the same public
+   helpers. `simulate_on_commit` is strictly required, not a guard: without it every RPC inside a
+   test's wrapping transaction — `self.create_organization()` included — trips
+   `in_test_assert_no_transaction`.
 
-   `SENTRY_DEFAULT_INTEGRATIONS` is read exactly once, by `initialize_app()`
-   (sentry/runner/initializer.py), which Sentry's pytest plugin calls from its
-   `pytest_configure`. By the time a conftest could append to that setting the list has already
-   been consumed, so appending is a no-op. Sentry registers its own example providers the other
-   way — `default_manager.register(...)` straight after `initialize_app()`, see
-   `register_extensions()` in sentry/testutils/pytest/sentry.py — and that is what we do below.
-   Both paths converge on the same manager entry.
-
-   `trylast=True` is load-bearing: conftest plugins are registered before the ones named with
-   `-p`, and pluggy calls hooks last-registered-first, so a plain `pytest_configure` here would
-   run *before* Sentry's — before `django.setup()`, when `sentry.integrations.base` is not even
-   importable.
-
-2. THE AUTOUSE FIXTURES OF SENTRY'S ROOT CONFTEST.
-   Sentry's `tests/conftest.py` is not just its own tests' file: it carries autouse fixtures the
-   `TestCase` classes in `sentry.testutils.cases` rely on. It cannot be loaded from here — both
-   repositories have a top-level `tests` package, so `-p tests.conftest` shadows ours and
-   collection dies with `No module named 'tests.integration.conftest'`. So we wire the same
-   fixtures ourselves, out of the same public `sentry.testutils` helpers (getsentry, which is
-   also an out-of-tree consumer of this harness, does the same).
-
-   `simulate_on_commit` is the one that is strictly required, not a guard: without it
-   `simulated_transaction_watermarks` never gets a watermark, and every RPC that Sentry makes
-   inside a test's wrapping transaction — including `self.create_organization()` in
-   `IntegrationTestCase.setUp` — trips `in_test_assert_no_transaction`:
-   "remote service method ... called inside transaction!". The rest are the guards Sentry runs
-   its own integrations under; we keep them so these tests are held to the same bar. `clear_caches`
-   matters for us specifically: `JagaIntegration.get_client()` caches the Jaga token in the Django
-   cache, and without a flush that token would leak between tests.
-
-The module must stay importable with no `sentry` installed — the unit run collects this
-directory too (the tests themselves skip via `pytest.importorskip("sentry")`).
+The module must stay importable with no `sentry` installed: the unit run collects this directory
+too (the tests themselves skip via `pytest.importorskip("sentry")`).
 """
 
 from __future__ import annotations
@@ -145,7 +119,7 @@ def audit_hybrid_cloud_writes_and_deletes() -> Generator[None]:
 
 @pytest.fixture(autouse=True)
 def clear_caches() -> Generator[None]:
-    """The Jaga token lives in the Django cache (see `DjangoCache` in sentry_jaga.integration)."""
+    """The Jaga token lives in the Django cache and would otherwise leak between tests."""
     if not SENTRY_INSTALLED:
         yield
         return

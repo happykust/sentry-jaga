@@ -34,40 +34,35 @@ Please do not disclose the details publicly until a fix has been released.
 
 ## How the integration handles secrets
 
-- The Jaga service account credentials (URL, email, password) are stored in Sentry's
-  encrypted `Integration.metadata` field — the same as for every other Sentry integration.
-  The package sets up no storage of its own.
+- The Jaga service account credentials (URL, email, password) are stored in Sentry's encrypted
+  `Integration.metadata` field, as for every other Sentry integration. The package sets up no
+  storage of its own.
 - The access token is cached in Sentry's Django cache and renewed when it expires.
 - The password and the tokens are never written to the logs and never returned to the UI.
 
-Everything that protects this data at rest is the configuration of your self-hosted Sentry
+What protects this data at rest is the configuration of your self-hosted Sentry
 (`SENTRY_OPTIONS["system.secret-key"]`, access to the database and to the cache). Create a
 dedicated service account for the integration, with the minimum rights it needs.
 
 ## Outbound requests bypass Sentry's SSRF protection
 
-The Jaga client uses a plain `requests.Session` rather than Sentry's `ApiClient`. That is a
-deliberate price paid for the isolation of the core: all of the package's logic lives
-without importing `sentry` and is therefore covered by tests that do not need its test
-stack. The consequences:
+The Jaga client uses a plain `requests.Session` rather than Sentry's `ApiClient`, so that the core
+can live without importing `sentry` and be tested without its test stack. The consequences:
 
-- **Sentry's outbound block list** (`SENTRY_DISALLOWED_IPS`, its SSRF protection) **is not
-  applied to these requests**;
-- the integration calls exactly the address the administrator typed into the installation
-  form — including addresses on the internal network, `localhost` and link-local ones
-  (`169.254.169.254` and other cloud metadata services);
-- that address lands in `Integration.metadata` and is reused by every subsequent request the
-  integration makes.
+- **Sentry's outbound block list** (`SENTRY_DISALLOWED_IPS`, its SSRF protection) **is not applied
+  to these requests**;
+- the integration calls exactly the address the administrator typed into the installation form —
+  including internal, `localhost` and link-local addresses (`169.254.169.254` and other cloud
+  metadata services);
+- that address lands in `Integration.metadata` and is reused by every subsequent request.
 
-What this means in practice: installing an integration is a privileged action. The right to
-install integrations in an organization effectively grants the ability to make Sentry send a
-POST request to an arbitrary address (with a service account login as the body). Therefore:
+Installing an integration is therefore a privileged action: the right to install one effectively
+grants the ability to make Sentry POST to an arbitrary address, with a service account login as the
+body. So:
 
 - **only ever point it at the trusted address of your Jaga instance**;
 - keep the right to install integrations with the organization's administrators;
-- if your perimeter requires strict control of outbound traffic, enforce it at the network
-  level (an egress policy for the Sentry workers) instead of relying on filtering inside the
-  package.
+- if your perimeter requires strict control of outbound traffic, enforce it at the network level (an
+  egress policy for the Sentry workers) rather than relying on filtering inside the package.
 
-We consider this a known and accepted limitation rather than a vulnerability; there is no
-need to report it separately.
+This is a known and accepted limitation rather than a vulnerability; there is no need to report it.

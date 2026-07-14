@@ -31,14 +31,10 @@ Repository = "https://github.com/happykust/sentry-jaga"
 Changelog = "https://github.com/happykust/sentry-jaga/blob/main/CHANGELOG.md"
 Issues = "https://github.com/happykust/sentry-jaga/issues"
 
-# This single entry point carries the whole package into Sentry: `install_plugin_apps()` puts
-# `sentry_jaga` into INSTALLED_APPS, which gives Django the installation-form template AND runs
-# `JagaAppConfig.ready()` — where the alert-rule action is added to Sentry's rule registry.
-#
-# There is deliberately NO `sentry.plugins` entry point. That is the documented door for a rule
-# action (`Plugin2.get_rules`), and on Sentry 26.3.1 it is nailed shut: `sentry.rules` builds its
-# registry at import time, during `django.setup()`, which runs *before* `register_plugins()` ever
-# registers a plugin. See the long note in `sentry_jaga/apps.py`.
+# This entry point carries the package into Sentry: it puts `sentry_jaga` into INSTALLED_APPS,
+# which gives Django the installation-form template and runs `JagaAppConfig.ready()`, where the
+# alert-rule action is registered. There is deliberately no `sentry.plugins` entry point — the
+# documented door for a rule action is unusable on Sentry 26.3.1; see `sentry_jaga/apps.py`.
 [project.entry-points."sentry.apps"]
 sentry_jaga = "sentry_jaga.apps.JagaAppConfig"
 
@@ -51,39 +47,23 @@ dev = [
     "mypy>=1.11",
     "types-requests",
     "pre-commit>=3.8",
-    # At runtime Django comes along with sentry (which requires django>=5.2.11).
-    # Here it is only needed for the installation form tests: `django.forms` and
-    # ValidationError work without configured settings, so the test lives in tests/unit.
-    #
-    # The <6 upper bound is mandatory: on Django 5.x a `URLField` completes a schemeless
-    # address to `http://` by default, while on 6.x it already completes it to `https://`.
-    # Letting the tests drift onto Django 6 would mean testing behaviour that production
-    # (Sentry 26.3.1 → Django 5.2) does not have — in exactly the place where the
-    # divergence costs the service account password.
+    # Django only for the installation-form tests; at runtime it arrives with sentry. The <6
+    # bound is mandatory: a Django 5.x `URLField` completes a schemeless address to `http://`,
+    # a 6.x one to `https://`, and production (Sentry 26.3.1) is on Django 5.2.
     "django>=5.2.11,<6",
 ]
-# There is deliberately NO `sentry` dependency group. Sentry cannot be installed as a package
-# at all: above 23.7.1 it is not on PyPI, and its source tree is not installable either — the
-# pyproject has no `[build-system]` and carries `version = "0.0.0"` (the real metadata lives in
-# setup.cfg; upstream installs itself with `tools/fast_editable.py`, not a build backend).
-# `uv sync --group sentry` used to be advertised here and could never have worked.
-#
-# The tests of the Sentry layer therefore run inside Sentry's *own* environment, against a
-# checkout of the tag: see the "Tests of the Sentry layer" section of CONTRIBUTING.md and the
-# `integration` job in .github/workflows/ci.yml.
+# There is deliberately no `sentry` dependency group: Sentry cannot be installed as a package at
+# all (not on PyPI above 23.7.1, and its source tree has no build backend). The tests of the Sentry
+# layer run inside Sentry's own environment — see CONTRIBUTING.md, "Tests of the Sentry layer".
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/sentry_jaga"]
-# `packages` ships EVERY file under that directory, whatever it is. An editor's `.bak`, a rebase's
-# `.orig`, a stray `.py.mbak` from a mutation run — each would be published to PyPI as part of the
-# package, in a release nobody would think to look inside. This is the guard. (CI builds from a
-# clean checkout, so it is a belt on top of braces — but the braces are a `.gitignore` rule, and
-# the person building a release by hand is the one who most needs them.)
+# `packages` ships every file under that directory, so an editor's `.bak` or a rebase's `.orig`
+# sitting next to a module would be published to PyPI inside the wheel.
 exclude = ["*.bak", "*.mbak", "*.orig", "*.rej", "*.swp"]
 
-# The sdist carries only the package code and the project scaffolding. The Jaga API spec
-# (jaga-openapi.json) is an internal Rostelecom document and must not be published to PyPI
-# under MIT; everything else is housekeeping and is not needed in a distribution.
+# jaga-openapi.json is an internal Rostelecom document and must not be published to PyPI under MIT;
+# the rest is housekeeping that a distribution does not need.
 [tool.hatch.build.targets.sdist]
 exclude = [
     "/docs",
@@ -112,26 +92,22 @@ python_version = "3.13"
 strict = true
 packages = ["sentry_jaga"]
 mypy_path = "src"
-# sentry is not fully typed — do not trip over its internals. `rest_framework` is here for the
-# same reason as `sentry`: it is not a dependency of this package (it arrives with Sentry), so it
-# is absent from the unit environment, and DRF ships no stubs anyway.
+# Neither sentry nor rest_framework is a dependency of this package (both arrive with Sentry), so
+# they are absent from the unit environment and ship no usable stubs.
 [[tool.mypy.overrides]]
 module = ["sentry.*", "django.*", "rest_framework.*"]
 ignore_missing_imports = true
 follow_imports = "silent"
 
-# The Sentry/Django base classes resolve to Any (the packages are not installed), and strict
-# mode forbids subclassing Any. Allow it — otherwise every class of the integration layer
-# grows a `# type: ignore[misc]`.
+# The Sentry/Django base classes resolve to Any, and strict mode forbids subclassing Any —
+# otherwise every class of the integration layer grows a `# type: ignore[misc]`.
 [[tool.mypy.overrides]]
 module = ["sentry_jaga.*"]
 disallow_subclassing_any = false
 
-# The code is checked in two configurations: without the Sentry sources (sentry.* -> Any) and
-# against them (MYPYPATH, the "Types against the Sentry API" CI job). Some Sentry methods are
-# unannotated — calling them needs a `# type: ignore[no-untyped-call]`, which is required in
-# the second run but counts as unused in the first. Silence the warning only for the modules
-# that call untyped Sentry methods.
+# The code is checked both without the Sentry sources (sentry.* -> Any) and against them (the
+# "Types against the Sentry API" CI job). A `# type: ignore[no-untyped-call]` is required in the
+# second run and counts as unused in the first, so silence the warning where they are needed.
 [[tool.mypy.overrides]]
 module = ["sentry_jaga.issues"]
 warn_unused_ignores = false
@@ -144,21 +120,13 @@ markers = ["sentry: tests that require the sentry package to be installed"]
 [tool.coverage.run]
 source = ["src/sentry_jaga"]
 branch = true
-# These modules import `sentry` at module level, so they cannot even be imported in this
-# environment — Sentry is not installable as a package (see the note by the dependency groups).
-# The unit run therefore never touches them, and keeping them in the denominator would mean
-# reporting a knowingly false number; hence `tests/integration/` skip via
-# `pytest.importorskip("sentry")`.
+# These modules import `sentry` at module level, so the unit run cannot import them at all and
+# keeping them in the denominator would report a knowingly false number. They are covered by
+# `tests/integration/` and by mypy against the real Sentry sources on every PR.
 #
-# They are not untested: `tests/integration/` drives them against a real Sentry, inside Sentry's
-# own environment (CONTRIBUTING.md, "Tests of the Sentry layer"; the `integration` CI job). What
-# runs on *every* PR, though, is mypy against the real Sentry sources — a separate, blocking job.
-#
-# pipeline.py is DELIBERATELY absent from this list: it imports `sentry` only inside
-# `InstallationConfigView.dispatch`, while the form and `verify_credentials` are tested on
-# django alone. Hiding the whole file would hide the covered code too, along with any future
-# uncovered code; exactly one method there is uncoverable, and it is marked
-# `# pragma: no cover`.
+# pipeline.py is deliberately absent: it imports `sentry` only inside
+# `InstallationConfigView.dispatch`, while the form and `verify_credentials` are tested on django
+# alone. That one method is marked `# pragma: no cover`.
 omit = [
     "src/sentry_jaga/apps.py",
     "src/sentry_jaga/metadata.py",

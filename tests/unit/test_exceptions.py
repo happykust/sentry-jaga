@@ -34,11 +34,8 @@ def test_error_message_uses_body_message() -> None:
 
 
 def test_error_message_unwraps_the_json_string_jaga_nests_in_error() -> None:
-    """Jaga hides the real message one level down, as a JSON string inside `error`. Taking the
-    key at face value shows the user a JSON sheet instead of the one sentence that matters.
-
-    This is the exact body a create without `task.project_id` comes back with.
-    """
+    """Jaga hides the real message one level down, as a JSON string inside `error`: taken at face
+    value, the user gets a JSON sheet instead of the one sentence that matters."""
     body = {
         "timestamp": "2026-07-13T10:00:00.000+00:00",
         "status": 500,

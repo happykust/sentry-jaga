@@ -72,9 +72,8 @@ def test_attribute_from_api_dictionary_and_multiple() -> None:
 
 
 def test_status_from_api_reads_the_category_mnemonic() -> None:
-    """`categoryNameM` is the field the whole status sync keys on — not `nameM`, and not the
-    display name, both of which vary per workflow. The payload is a real one from
-    `workflowStatusesAvail`."""
+    """The status sync keys on `categoryNameM`, not on `nameM` or the display name — both of which
+    vary per workflow."""
     status = Status.from_api(
         {
             "id": 107390,
@@ -88,7 +87,7 @@ def test_status_from_api_reads_the_category_mnemonic() -> None:
 
 
 def test_status_from_api_without_a_category() -> None:
-    """A status with no category cannot match any mapping — it must come out as "", not crash,
-    so that one odd status does not take the whole sync down with a KeyError."""
+    """A status with no category must come out as "" rather than take the whole sync down with a
+    KeyError."""
     status = Status.from_api({"id": 1, "name": "Odd"})
     assert status.category == ""

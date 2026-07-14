@@ -29,8 +29,7 @@ def _attr(attr_id: int, name: str, object_type: str, **kwargs: Any) -> Attribute
 
 
 # The attribute set of a real Jaga task type ("Стандарт"), mnemonics and flags as the live
-# instance reports them. The fixtures used to be invented, and that is exactly why nothing
-# caught the missing space/type cells in the create payload.
+# instance reports them — invented fixtures are what let the missing space/type cells through.
 SPACE = _attr(90, "Space", SPACE_OBJECT_TYPE, required=True)
 TYPE = _attr(91, "Task type", TYPE_OBJECT_TYPE, required=True)
 TITLE = _attr(100, "Title", TITLE_OBJECT_TYPE, required=True)
@@ -41,7 +40,7 @@ LABEL = _attr(104, "Label", LABEL_OBJECT_TYPE, multiple=True)
 PRIORITY = _attr(102, "Priority", "task.priority_id")
 CREATOR = _attr(92, "Author", CREATOR_OBJECT_TYPE)
 CREATE_TS = _attr(93, "Created at", CREATE_TS_OBJECT_TYPE)
-# A dictionary-backed attribute (a custom one — Jaga gives it a `dictionaryId`).
+# A dictionary-backed attribute: Jaga gives it a `dictionaryId`.
 SEVERITY = _attr(110, "Severity", "task.flex_severity", dictionary_id=55, required=True)
 HIDDEN = _attr(105, "Internal", "task.flex_internal", dictionary_id=56, visible=False)
 
@@ -49,20 +48,16 @@ REAL_ATTRIBUTES = [SPACE, TYPE, TITLE, DESCRIPTION, ASSIGNEE, LABEL, PRIORITY, C
 
 
 def test_field_name_is_stable() -> None:
-    """An ordinary attribute is named after its Jaga id — nothing outside this package could
-    know what else to call it."""
+    """An ordinary attribute is named after its Jaga id: nothing outside this package could know
+    what else to call it."""
     assert field_name(SEVERITY) == "attr_110"
     assert field_name(ASSIGNEE) == "attr_103"
 
 
 def test_title_and_description_use_sentrys_canonical_field_names() -> None:
-    """The two fields Sentry itself names must not hide behind an `attr_<id>` name.
-
-    The alert-rule ticket action overwrites `data["title"]` / `data["description"]` with the
-    title and body of the event that fired the rule, and its modal hides the fields by those
-    exact names. Named `attr_100`, the title would never reach us, and every task filed by a
-    rule would carry the empty default saved into the rule config. See CANONICAL_FIELD_NAMES.
-    """
+    """The alert-rule ticket action overwrites `data["title"]`/`data["description"]` by those exact
+    names: called `attr_100`, the title would never reach us and rule-filed tasks would be
+    nameless."""
     assert field_name(TITLE) == "title"
     assert field_name(DESCRIPTION) == "description"
 
@@ -132,15 +127,9 @@ def test_build_attribute_fields_renders_the_supported_attributes() -> None:
 def test_build_attribute_fields_hides_the_injected_and_server_attributes(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """The space and the type are submitted, never shown: the cascade selects already ask for
-    them, and a second "Space" box in the same form would be a lie about what it controls.
-    The author and the creation date are Jaga's to fill.
-
-    They are DROPPED ON PURPOSE, not merely unsupported. Both distinctions matter: the space
-    and the type are `required`, so letting them fall through to the "cannot render this" rule
-    would log a warning blaming two fields that are, in fact, submitted correctly — noise aimed
-    straight at whoever is debugging a failed create.
-    """
+    """The space and the type are submitted but never shown (the cascade selects ask for them) and
+    the author and creation date are Jaga's to fill: they are dropped ON PURPOSE, so no
+    "unsupported required attribute" warning may blame fields the plugin submits correctly."""
     with caplog.at_level(logging.WARNING, logger="sentry_jaga.fields"):
         fields = build_attribute_fields(REAL_ATTRIBUTES, {}, "t", "d")
 
@@ -154,8 +143,8 @@ def test_build_attribute_fields_hides_the_injected_and_server_attributes(
 
 
 def test_build_attribute_fields_skips_unsupported_reference_attribute() -> None:
-    """Priority is a reference with no dictionary behind it: we have no list of its values, and
-    a text box over an id column would only send Jaga garbage."""
+    """Priority is a reference with no dictionary behind it, and a text box over an id column would
+    only send Jaga garbage."""
     fields = build_attribute_fields([TITLE, PRIORITY], {}, "t", "d")
     assert [f["name"] for f in fields] == [field_name(TITLE)]
 
@@ -163,8 +152,8 @@ def test_build_attribute_fields_skips_unsupported_reference_attribute() -> None:
 def test_build_attribute_fields_warns_when_a_skipped_attribute_is_required(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """A required attribute we cannot render dooms the create. Jaga's own 500 tells the user
-    which field is missing; this log line tells the operator that the plugin left it out."""
+    """A required attribute we cannot render dooms the create, and this log line is what tells the
+    operator that the plugin left it out."""
     required_priority = _attr(102, "Priority", "task.priority_id", required=True)
 
     with caplog.at_level(logging.WARNING, logger="sentry_jaga.fields"):
@@ -220,8 +209,8 @@ def test_form_data_to_attributes_builds_payload() -> None:
 
 
 def test_form_data_to_attributes_marks_assignee_and_label_as_reference_values() -> None:
-    """Neither has a `dictionaryId`, so the old rule ("reference iff dictionary") sent them as
-    plain text. Their values are ids: Jaga needs `referenceValue` on them."""
+    """Neither has a `dictionaryId`, so the old "reference iff dictionary" rule sent these id
+    values as plain text."""
     payload = form_data_to_attributes(
         {"attr_103": ["uuid-1"], "attr_104": ["7"]}, [ASSIGNEE, LABEL]
     )
@@ -243,8 +232,8 @@ def test_form_data_to_attributes_keeps_multiple_values_as_list() -> None:
 
 
 def test_injected_attributes_carry_the_space_and_the_type() -> None:
-    """Jaga refuses a create whose `attributes` omit these two — with an HTTP 500 — even though
-    both ids are already in the create URL."""
+    """Jaga answers 500 to a create whose `attributes` omit these two, even though both ids are
+    already in the create URL."""
     assert injected_attributes(REAL_ATTRIBUTES, project_id=7, type_id=33532) == [
         {"fieldId": 90, "value": 7, "referenceValue": True, "addInfo": {}},
         {"fieldId": 91, "value": 33532, "referenceValue": True, "addInfo": {}},
@@ -266,8 +255,8 @@ def test_merge_auto_label_adds_the_label_to_a_payload_with_none() -> None:
 
     assert payload[-1] == {
         "fieldId": 104,
-        # A string, not an int: the form's own label values are strings (`get_labels` offers
-        # `(str(id), name)`), and the two must not end up as different values in one list.
+        # A string, not an int: the form's own label values are strings, and the two must not end
+        # up as different values in one list.
         "value": ["17834"],
         "referenceValue": True,
         "addInfo": {},
@@ -275,8 +264,8 @@ def test_merge_auto_label_adds_the_label_to_a_payload_with_none() -> None:
 
 
 def test_merge_auto_label_keeps_the_labels_the_user_picked() -> None:
-    """`task.label_id` is `multiple`: the automatic label joins the user's choice, it does not
-    replace it. Overwriting the cell would silently throw away labels somebody chose on purpose."""
+    """`task.label_id` is `multiple`, so overwriting the cell would silently throw away labels
+    somebody chose on purpose."""
     payload: list[dict[str, Any]] = [
         {"fieldId": 104, "value": ["7", "8"], "referenceValue": True, "addInfo": {}}
     ]
@@ -288,7 +277,7 @@ def test_merge_auto_label_keeps_the_labels_the_user_picked() -> None:
 
 
 def test_merge_auto_label_does_not_send_the_same_label_twice() -> None:
-    """The user picked the automatic label by hand from the select. Jaga must not be handed it
+    """The user picked the automatic label by hand from the select, and Jaga must not be handed it
     twice."""
     payload: list[dict[str, Any]] = [
         {"fieldId": 104, "value": ["17834", "7"], "referenceValue": True, "addInfo": {}}
@@ -309,8 +298,8 @@ def test_merge_auto_label_normalises_a_single_chosen_label() -> None:
 
 
 def test_merge_auto_label_leaves_a_single_valued_attribute_the_user_filled_alone() -> None:
-    """A task type whose label attribute takes one value, already filled in: there is no room
-    for both, and the user's choice is the one that was made on purpose."""
+    """A single-valued label attribute the user already filled has no room for both, and their
+    choice is the one made on purpose."""
     single_label = _attr(104, "Label", LABEL_OBJECT_TYPE)
     payload: list[dict[str, Any]] = [
         {"fieldId": 104, "value": "7", "referenceValue": True, "addInfo": {}}
@@ -329,8 +318,8 @@ def test_merge_auto_label_fills_an_empty_single_valued_attribute() -> None:
 
 
 def test_merge_auto_label_skips_a_task_type_without_labels() -> None:
-    """Not every task type has a label attribute. A cell with a `fieldId` the type never
-    declared is not a label — it is a create Jaga rejects."""
+    """Not every task type has a label attribute, and a cell with a `fieldId` the type never
+    declared is a create Jaga rejects."""
     payload: list[dict[str, Any]] = [
         {"fieldId": 100, "value": "Login is broken", "referenceValue": False, "addInfo": {}}
     ]

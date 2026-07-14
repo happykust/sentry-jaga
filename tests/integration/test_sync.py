@@ -60,8 +60,8 @@ SPACE_STATUSES = [
 
 
 def _raw_task(transitions: list[int] | None = None) -> dict[str, object]:
-    """The task as Jaga returns it: the space is an attribute, and the reachable statuses come
-    with it. Everything the sync needs is here — nothing is stored on the Sentry side."""
+    """The task as Jaga returns it: everything the sync needs is here, nothing is stored on the
+    Sentry side."""
     return {
         "id": TASK_ID,
         "code": "PLT-500",
@@ -75,8 +75,7 @@ def _raw_task(transitions: list[int] | None = None) -> dict[str, object]:
         "attributes": [
             {"fieldId": 90, "value": SPACE_ID, "objectTypeNameM": "task.project_id"},
             {"fieldId": 100, "value": "Login is broken", "objectTypeNameM": "task.task_title"},
-            # The assignee is an attribute like any other, and the cell carries its own `fieldId`
-            # — which is what spares the sync a second round trip to the task type.
+            # The cell carries its own `fieldId`, which spares the sync a round trip.
             {"fieldId": ASSIGNEE_FIELD_ID, "value": [], "objectTypeNameM": "task.assignee_uuid"},
         ],
     }
@@ -85,8 +84,7 @@ def _raw_task(transitions: list[int] | None = None) -> dict[str, object]:
 class JagaSyncTest(APITestCase):
     def setUp(self) -> None:
         super().setUp()
-        # The client caches the token and the per-space statuses in the Django cache, which
-        # outlives a test. Clear it so one test cannot serve another's statuses from cache.
+        # The Django cache outlives a test: clear it so one test cannot serve another's statuses.
         cache.clear()
         # Control-silo models — see the comment in test_issues.py. `ExternalIssue` below is a
         # region model, so it is created in the default (CELL) mode.
@@ -98,9 +96,8 @@ class JagaSyncTest(APITestCase):
                 metadata={"instance_url": BASE, "email": "bot@example.com", "password": "secret"},
             )
             self.integration.add_organization(self.organization, self.user)
-            # The author of the notes below. `User` is a control-silo model, so naming it has to
-            # happen here — and it has to be named at all, or the attribution assertions would
-            # only be comparing the code against itself.
+            # The author of the notes below must be named, or the attribution assertions would
+            # only compare the code against itself.
             self.user.update(name="Ivanov Ivan")
 
         self.installation = self.integration.get_installation(self.organization.id)
@@ -151,9 +148,9 @@ class JagaSyncTest(APITestCase):
         assert self.installation.should_sync("outbound_status") is True
 
     def test_organization_config_defaults_match_what_the_sync_falls_back_to(self) -> None:
-        """The defaults rendered in the form and the fallbacks in `sync_status_outbound` are two
-        separate literals that must agree: before the first save the config is empty, and the
-        sync still has to behave the way the (unsaved) form claims it will."""
+        """The rendered defaults and the fallbacks in `sync_status_outbound` are separate literals
+        that must agree: before the first save the config is empty, and the sync still has to
+        behave the way the unsaved form claims it will."""
         fields = {field["name"]: field for field in self.installation.get_organization_config()}
 
         assert set(fields) == {
@@ -171,17 +168,16 @@ class JagaSyncTest(APITestCase):
         assert fields["unresolved_status_category"]["default"] == CATEGORY_TODO
         assert fields["comment_on_status_change"]["default"] is True
         assert fields["sync_comments"]["default"] is False
-        # An empty box is the off switch, so this default cannot be sourced from Jaga either —
-        # and it must be the same literal the create falls back to (see `issues._auto_label`).
+        # Must be the same literal the create falls back to (see `issues._auto_label`).
         assert fields["auto_label"]["default"] == DEFAULT_AUTO_LABEL
         # Off by default: an event carries personal data, and the Jaga task may have a wider
         # audience than the Sentry issue.
         assert fields["attach_event"]["default"] is False
 
     def test_status_category_choices_are_offered_without_calling_jaga(self) -> None:
-        """The settings page must render while Jaga is down — an org whose Jaga is unreachable
-        still has to be able to open its settings and turn the sync off. Hence the categories
-        are constants, not a fetch. `responses` is not active here: any HTTP call would raise."""
+        """An org whose Jaga is unreachable must still be able to open its settings and turn the
+        sync off, so the categories are constants; `responses` is not active, so any HTTP call
+        raises."""
         fields = {field["name"]: field for field in self.installation.get_organization_config()}
 
         for name in ("resolved_status_category", "unresolved_status_category"):
@@ -193,8 +189,8 @@ class JagaSyncTest(APITestCase):
 
     @responses.activate
     def test_sync_status_outbound_moves_the_task_on_resolve(self) -> None:
-        """The point of the feature: resolving in Sentry MOVES the Jaga task, and by default
-        also comments. The target id is resolved per space — never hardcoded."""
+        """Resolving in Sentry moves the Jaga task and, by default, comments; the target id is
+        resolved per space, never hardcoded."""
         self._mock_jaga()
 
         self.installation.sync_status_outbound(
@@ -241,8 +237,8 @@ class JagaSyncTest(APITestCase):
 
     @responses.activate
     def test_sync_status_outbound_comments_when_the_task_cannot_be_moved(self) -> None:
-        """The workflow offers no step into "done" from here. The task stays put and the comment
-        is posted anyway — even though comments are switched off."""
+        """The workflow offers no step into "done" from here: the task stays put and the comment is
+        posted anyway, even with comments switched off."""
         self._configure(comment_on_status_change=False)
         self._mock_jaga(task=_raw_task(transitions=[IN_PROGRESS_ID]))
 
@@ -277,9 +273,8 @@ class JagaSyncTest(APITestCase):
     # wrote the note, and the note itself.
 
     def _note(self, text: str, external_id: object | None = None) -> Activity:
-        """A Sentry note, exactly as the background tasks load it: an `Activity` of type NOTE,
-        whose text lives in `data["text"]` and whose synced comment id lives in
-        `data["external_id"]`."""
+        """A Sentry note as the background tasks load it: an `Activity` of type NOTE, with its text
+        in `data["text"]` and its synced comment id in `data["external_id"]`."""
         data: dict[str, object] = {"text": text}
         if external_id is not None:
             data["external_id"] = external_id
@@ -292,9 +287,8 @@ class JagaSyncTest(APITestCase):
         )
 
     def test_comment_sync_is_off_until_an_admin_turns_it_on(self) -> None:
-        """Unlike the status sync, this one defaults OFF — as it does in every issue integration
-        upstream. A Sentry note is internal discussion and can name a customer or a credential;
-        forwarding it to a tracker with a different audience is a decision, not a surprise."""
+        """A Sentry note is internal discussion and can name a customer or a credential, so
+        forwarding it to a tracker with a different audience must be a decision, not a surprise."""
         assert self.installation.should_sync("comment") is False
 
         self._configure(sync_comments=True)
@@ -304,22 +298,21 @@ class JagaSyncTest(APITestCase):
         assert self.installation.should_sync("comment") is False
 
     def test_the_comment_checkbox_is_offered_and_its_default_matches_should_sync(self) -> None:
-        """The rendered default and the fallback in `should_sync` are two separate literals that
-        must agree: before the first save the config is empty, and a checkbox that reads "off"
-        while the sync is running (or the other way round) is a lie the first Save makes true."""
+        """The rendered default and the fallback in `should_sync` are separate literals that must
+        agree: a checkbox reading "off" while the sync runs is a lie the first Save makes true."""
         fields = {field["name"]: field for field in self.installation.get_organization_config()}
 
         assert fields["sync_comments"]["default"] is False
         assert self.installation.should_sync("comment") is False
 
     def test_the_inbound_syncs_can_never_be_switched_on(self) -> None:
-        """Jaga -> Sentry needs webhooks, which this version does not have. A True here would have
+        """Jaga -> Sentry needs webhooks, which this version does not have: a True here would have
         Sentry queue work that silently does nothing."""
         for attribute in ("inbound_assignee", "inbound_status"):
             assert self.installation.should_sync(attribute) is False
 
     def test_assignee_sync_is_off_until_an_admin_asks_for_it(self) -> None:
-        """It puts a named human on a ticket in another system, and notifies them. The rendered
+        """It puts a named human on a ticket in another system and notifies them; the rendered
         default and the `should_sync` fallback are separate literals that have to agree."""
         fields = {field["name"]: field for field in self.installation.get_organization_config()}
 
@@ -331,23 +324,14 @@ class JagaSyncTest(APITestCase):
 
     @responses.activate
     def test_sync_assignee_outbound_puts_the_sentry_assignee_on_the_task(self) -> None:
-        """Sentry and Jaga are matched by email; the UUID behind it is what Jaga stores.
-
-        The address asserted here is the RpcUser's own — NOT one this test planted. Overwriting
-        `User.email` would change what the assertion reads without changing what `RpcUser.emails`
-        (which is built from the `UserEmail` table) contains: the test would go green while
-        checking nothing.
-
-        The PRIMARY address is the one tried first, and the lookup stops there. That order is
-        deliberate: `RpcUser.emails` holds only *verified* addresses, and on a self-hosted Sentry
-        with no SMTP nobody has any.
-        """
+        """The address asserted here is the RpcUser's OWN, never one this test planted: overwriting
+        `User.email` would not change `RpcUser.emails` (built from the `UserEmail` table), and the
+        test would go green while checking nothing."""
         self._mock_jaga()
         rpc_user = user_service.get_user(user_id=self.user.id)
         assert rpc_user is not None
-        # Jaga must answer with the very address it was asked about: the client rejects a profile
-        # whose `mail` is somebody else's, because `findByMailOrName` is a fuzzy search and a
-        # near-miss would put the wrong human on a real task.
+        # Jaga must answer with the very address it was asked about: `findByMailOrName` is a fuzzy
+        # search, and a near-miss would put the wrong human on a real task.
         responses.add(
             responses.POST,
             f"{API}/v1/team/userProfile/findByMailOrName",
@@ -385,13 +369,9 @@ class JagaSyncTest(APITestCase):
 
     @responses.activate
     def test_no_user_means_unassign_which_is_what_sentry_means_by_it(self) -> None:
-        """`user=None` is Sentry's way of saying "nobody", in as many words: its own task resolves
-        the user with `user_service.get_user(user_id) if user_id else None`, under the comment
-        "Assume unassign if None" (`integrations/tasks/sync_assignee_outbound.py`).
-
-        (An issue assigned to a *team* never reaches here at all — `models/groupassignee.py` only
-        queues the outbound sync when `assignee_type == "user"`.)
-        """
+        """`user=None` is Sentry's way of saying "nobody" ("Assume unassign if None", in
+        `integrations/tasks/sync_assignee_outbound.py`); an issue assigned to a TEAM never reaches
+        the sync at all."""
         self._mock_jaga()
 
         self.installation.sync_assignee_outbound(self.external_issue, None, assign=True)
@@ -400,15 +380,9 @@ class JagaSyncTest(APITestCase):
 
     @responses.activate
     def test_a_user_with_no_verified_email_must_not_wipe_the_assignee(self) -> None:
-        """THE destructive one. `RpcUser.emails` holds only the user's VERIFIED addresses, and
-        `UserEmail.is_verified` defaults to False — so on a self-hosted Sentry with no working
-        SMTP that set is empty for everybody.
-
-        Reading "no addresses" as "unassign" would mean that switching this sync on turns every
-        assignment in Sentry into the REMOVAL of the executor from the linked Jaga task. It has to
-        be a lookup miss instead: the task is left exactly as it was, and Sentry is told the target
-        could not be found.
-        """
+        """`RpcUser.emails` holds only VERIFIED addresses — empty for everybody on an SMTP-less
+        self-hosted Sentry — so reading "no addresses" as "unassign" would make every assignment
+        WIPE the Jaga assignee; it must be a lookup miss that leaves the task untouched."""
         self._mock_jaga()
         responses.add(
             responses.POST,
@@ -429,9 +403,8 @@ class JagaSyncTest(APITestCase):
 
     @responses.activate
     def test_a_sentry_user_with_no_jaga_account_is_reported_not_written(self) -> None:
-        """`IntegrationSyncTargetNotFound` is what Sentry's task catches and records as a halt (it
-        does not retry it). Silently returning would record the assignment as a success that never
-        happened."""
+        """Sentry's task catches `IntegrationSyncTargetNotFound` and records a halt, so silently
+        returning would record the assignment as a success that never happened."""
         self._mock_jaga()
         responses.add(
             responses.POST,
@@ -448,15 +421,9 @@ class JagaSyncTest(APITestCase):
         assert self._calls(f"/v1/task/{TASK_ID}") == [], "the task keeps whoever it had"
 
     @responses.activate
-    @responses.activate
     def test_jaga_being_down_raises_so_that_sentry_retries_the_assignment(self) -> None:
-        """Unlike the status sync, this one does NOT swallow. Sentry's task retries five times, and
-        swallowing would throw that retry away AND record the assignment as a success that never
-        happened (`ProjectManagementEvent(OUTBOUND_ASSIGNMENT_SYNC).capture()` wraps the call).
-
-        The old version of this test had no assertions at all: it would have passed against a
-        `sync_assignee_outbound` that did nothing whatsoever.
-        """
+        """Unlike the status sync, this one does NOT swallow: Sentry's task retries five times, and
+        swallowing would throw that retry away and record a success that never happened."""
         responses.add(responses.POST, f"{API}/v1/auth/login", json=AUTH_OK, status=200)
         responses.add(
             responses.GET, f"{API}/v1/task/findExtendedWithFlexField/code/PLT-500", status=500
@@ -485,15 +452,14 @@ class JagaSyncTest(APITestCase):
             "contentComment": "Ivanov Ivan wrote:\n\n> Looks like a bad deploy",
             "attachIsPending": False,
         }
-        # The created comment must come back: `sentry.integrations.tasks.create_comment` reads its
-        # id out of the return value and stores it on the note as `external_id`. Without it, an
-        # edit of the note later has no comment to point at.
+        # Sentry stores the returned id on the note as `external_id`; without it, a later edit has
+        # no comment to point at.
         assert self.installation.get_comment_id(comment) == 1
 
     @responses.activate
     def test_create_comment_resolves_the_task_code_to_an_id(self) -> None:
-        """Sentry hands us `external_issue.key` — the task CODE. Jaga's comment API wants the
-        numeric id, and nothing on the Sentry side is given to us to look it up with."""
+        """Sentry hands us `external_issue.key`, the task CODE, while Jaga's comment API wants the
+        numeric id."""
         self._mock_jaga()
 
         self.installation.create_comment("PLT-500", self.user.id, self._note("hi"))
@@ -506,7 +472,7 @@ class JagaSyncTest(APITestCase):
     @responses.activate
     def test_update_comment_rewrites_the_comment_the_note_created(self) -> None:
         """An edited note must amend its Jaga comment, not append a second one — which is why
-        `create_comment` had to return the comment in the first place."""
+        `create_comment` returns the comment at all."""
         self._mock_jaga()
         responses.add(responses.PUT, f"{API}/v1/comment", json={"id": 1, "taskId": TASK_ID})
 

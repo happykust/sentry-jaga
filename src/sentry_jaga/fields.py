@@ -1,41 +1,26 @@
 """Mapping of Jaga EAV attributes to Sentry form fields and back.
 
-Sentry renders the create/link forms from a list of field dicts returned by the
-integration. Supported keys: name, label, type (string/textarea/select), default,
-choices, required, multiple, updatesForm, help.
+Jaga describes a task's fields as EAV attributes, identified by the mnemonic `objectTypeNameM`
+(e.g. `task.task_title` — NOT `task.title`; the description is `task.content`, not
+`task.content_data`).
 
-Jaga describes the fields of a task with attributes (EAV). System attributes are
-recognised by their mnemonic code `objectTypeNameM` (for example, `task.task_title`).
-
-Which attributes we render, and why the rest are dropped
---------------------------------------------------------
-The task-type endpoint hands back `AttributeApiDto`, which carries no data type — only a
-mnemonic, an optional `dictionaryId`, and the display flags. So an attribute is renderable
-only when we can tell what its values *are*:
+`AttributeApiDto` carries no data type, only a mnemonic, an optional `dictionaryId` and display
+flags. So an attribute is renderable only when its values can be sourced:
 
 * `task.task_title` -> `string`, pre-filled with the Sentry issue title;
 * `task.content` -> `textarea`, pre-filled with the Sentry context;
 * anything with a `dictionaryId` -> `select` over `/v1/listRef/{id}/any`;
-* `task.assignee_uuid` -> `select` over the members of the space. Its values are EMAILS, not the
-  person UUIDs the attribute itself stores: a UUID costs one HTTP call per person, so they are
-  resolved at submit time for whoever was picked rather than for every member at render time.
-  See `JagaClient.get_space_users` and `issue_config.resolve_assignee_cells`;
+* `task.assignee_uuid` -> `select` over the space members, whose values are EMAILS rather than
+  person UUIDs (see `JagaClient.get_space_users`);
 * `task.label_id` -> `select` over the labels (values are label ids).
 
-`SPACE_OBJECT_TYPE` / `TYPE_OBJECT_TYPE` are a special case: Jaga rejects a create that omits
-them from `attributes` (HTTP 500, "Поле "Пространство" обязательно для заполнения") even
-though both ids are already in the create URL. Rendering them would duplicate the cascade
-selects, so they are hidden from the form and injected into the payload at submit time — see
-`injected_attributes`.
+Everything else (priority, release, parent, estimate, deadlines, ...) is a reference whose
+choices we cannot source; a text box over an id column would only produce garbage Jaga rejects,
+so it is skipped and the user fills it in Jaga afterwards. A skipped attribute that is `required`
+dooms the create, and `_warn_unsupported` names it in the logs.
 
-`SERVER_OBJECT_TYPES` (author, creation date) are filled in by Jaga itself: neither rendered
-nor sent.
-
-Everything else — priority, release, parent, estimate, deadlines, work periods, and any
-unrecognised attribute — is a reference or a typed value whose choices we cannot source. A
-plain text box over an id column only yields garbage that Jaga rejects, so those attributes
-are skipped; the user fills them in Jaga afterwards. When a skipped attribute is `required`,
-the create WILL fail with Jaga's own message, and the warning logged here names the culprit.
+`SPACE_OBJECT_TYPE`/`TYPE_OBJECT_TYPE` are hidden but still sent (see `injected_attributes`);
+`SERVER_OBJECT_TYPES` are filled in by Jaga and neither rendered nor sent.
 """
 
 from __future__ import annotations
@@ -67,21 +52,14 @@ SOURCED_OBJECT_TYPES = frozenset({ASSIGNEE_OBJECT_TYPE, LABEL_OBJECT_TYPE})
 
 FIELD_PREFIX = "attr_"
 
-# Sentry's own names for the two fields every issue-tracking integration has; see
-# `IssueBasicIntegration.get_create_issue_config`, whose default form is exactly
-# `title` + `description`.
+# Sentry's own names for the two fields every issue-tracking integration has. Not cosmetic —
+# the alert-rule ticket action keys on them:
 #
-# Using them for the Jaga title/description attributes instead of the generic `attr_<id>`
-# is NOT cosmetic — the alert-rule ticket action depends on these names:
-#
-# * `sentry.rules.actions.integrations.create_ticket.utils.create_issue` overwrites
-#   `data["title"]` / `data["description"]` with the title and body of the event that fired
-#   the rule, then hands `data` to `create_issue()`. Under an `attr_<id>` name we would never
-#   see those values, and every rule-created task would carry the empty default that was
-#   saved into the rule config (`get_create_issue_config` is called with `group=None` there).
-# * The ticket-rule modal hides fields named `title`/`description` and shows "This will be
-#   the same as the Sentry Issue." in their place. An `attr_<id>` field would instead be
-#   rendered as an editable box whose value the rule then silently ignores.
+# * `create_ticket.utils.create_issue` overwrites `data["title"]`/`data["description"]` with the
+#   firing event's title and body. Under an `attr_<id>` name a rule-created task would instead
+#   carry the empty default saved into the rule config.
+# * The ticket-rule modal hides fields named `title`/`description`; an `attr_<id>` field would be
+#   rendered as an editable box whose value the rule then ignores.
 CANONICAL_FIELD_NAMES = {
     TITLE_OBJECT_TYPE: "title",
     DESCRIPTION_OBJECT_TYPE: "description",
@@ -91,8 +69,8 @@ CANONICAL_FIELD_NAMES = {
 def field_name(attr: Attribute) -> str:
     """Name of the Sentry form field for a Jaga attribute.
 
-    The title and the description travel under Sentry's canonical names; everything else is
-    named after the Jaga attribute id, because nothing outside this package knows what it is.
+    Title and description travel under Sentry's canonical names (see `CANONICAL_FIELD_NAMES`);
+    everything else is named after the Jaga attribute id.
     """
     canonical = CANONICAL_FIELD_NAMES.get(attr.object_type_name_m)
     if canonical is not None:
@@ -120,8 +98,7 @@ def is_reference(attr: Attribute) -> bool:
 def is_renderable(attr: Attribute) -> bool:
     """Can this attribute be shown as a field the user can meaningfully fill in?
 
-    See the module docstring: everything whose values we cannot source is dropped rather than
-    rendered as a text box over an id column.
+    See the module docstring: an attribute whose values we cannot source is dropped.
     """
     if attr.object_type_name_m in (TITLE_OBJECT_TYPE, DESCRIPTION_OBJECT_TYPE):
         return True
@@ -182,9 +159,8 @@ def build_attribute_fields(
 ) -> list[dict[str, Any]]:
     """Build the form fields for the attributes of a task type we can render.
 
-    "Title" and "description" are pre-filled with Sentry data. The space and the task type are
-    left out — the cascade selects already carry them (see `injected_attributes`) — and so is
-    every attribute whose values we cannot source.
+    Title and description are pre-filled with Sentry data. The space and the task type are left
+    out (see `injected_attributes`), as is every attribute whose values we cannot source.
     """
     fields: list[dict[str, Any]] = []
     for attr in sorted(attributes, key=lambda a: a.order_num):
@@ -210,14 +186,13 @@ def build_attribute_fields(
 def _warn_unsupported(attr: Attribute) -> None:
     """A required attribute we cannot render dooms the create — say so in the logs.
 
-    Jaga will refuse the create with a message of its own ("Поле "..." обязательно для
-    заполнения"), which the user does see. What they cannot see is that the plugin knowingly
-    left the field out; this log line is the missing half of that story.
+    The user sees Jaga's own refusal ("Поле "..." обязательно для заполнения") but not that the
+    plugin knowingly left the field out; this log line is the missing half.
     """
     if not attr.required:
         return
-    # `attribute_name`, not `name`: `extra` may not shadow a LogRecord field, and `name` is
-    # taken by the logger's own name — logging raises KeyError on the clash.
+    # `attribute_name`, not `name`: `extra` may not shadow a LogRecord field, and `name` is the
+    # logger's own — logging raises KeyError on the clash.
     logger.warning(
         "jaga.fields.required_attribute_not_supported",
         extra={"object_type_name_m": attr.object_type_name_m, "attribute_name": attr.name},
@@ -250,18 +225,10 @@ def merge_auto_label(
 ) -> None:
     """Add the automatic label to a create payload — *alongside* the labels the user picked.
 
-    `task.label_id` is a `multiple` attribute, and whoever fills the form may well have chosen
-    labels of their own. The automatic label is an addition to that choice, never a replacement,
-    so the id is merged into the cell the form produced instead of overwriting it — and a label
-    the user happened to pick by hand that IS the automatic one is not sent twice.
-
-    The id travels as a string, exactly as the form's own label values do: `get_labels` offers
-    its choices as `(str(id), name)` and Sentry hands back whatever it was given. Injecting a raw
-    `int` here would make a hand-picked "17" and an injected 17 two different values in the same
-    list — a duplicate Jaga would have to sort out.
-
-    A task type with no labels attribute at all gets nothing: the payload is left alone rather
-    than grown a cell whose `fieldId` belongs to no attribute of the type.
+    `task.label_id` is `multiple`, so the id is merged into the cell the form produced rather than
+    overwriting the user's own choice. It travels as a string, like the form's own label values
+    (`get_labels` yields `(str(id), name)`): a raw int would make a hand-picked "17" and an
+    injected 17 two different values in one list.
     """
     attr = find_attribute(attributes, LABEL_OBJECT_TYPE)
     if attr is None:
@@ -281,8 +248,8 @@ def merge_auto_label(
         return
 
     if not attr.multiple:
-        # A single-valued labels attribute that the user has already filled in: there is no room
-        # for both, and their choice is the one that was made on purpose.
+        # Single-valued and already filled in: there is no room for both, and the user's choice
+        # is the deliberate one.
         return
 
     raw = cell["value"]
@@ -297,14 +264,13 @@ def injected_attributes(
 ) -> list[dict[str, Any]]:
     """The space/type cells Jaga demands inside `attributes` on create.
 
-    Both ids are already in the URL of `POST /v1/task/createByTaskType/{project}/{type}`, and
-    Jaga still refuses the create without them:
+    Both ids are already in the URL of `POST /v1/task/createByTaskType/{project}/{type}` and Jaga
+    STILL refuses the create without them:
 
         HTTP 500 — Поле "Пространство" обязательно для заполнения для типа задачи = 33532
 
     They have no form field of their own (the cascade selects play that role), so nothing in
-    `form_data` would ever produce them. Verified against a live instance: with these two cells
-    the very same payload is accepted.
+    `form_data` would ever produce them.
     """
     cells: list[dict[str, Any]] = []
     for object_type, value in ((SPACE_OBJECT_TYPE, project_id), (TYPE_OBJECT_TYPE, type_id)):

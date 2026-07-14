@@ -21,46 +21,34 @@ API_PREFIX = "/external-api"
 STATUS_MODIFIER_TODO = 1
 DEFAULT_TIMEOUT = 30
 DEFAULT_PAGE_SIZE = 100
-# The application the space-membership endpoints are scoped to. `applicationMnemo` is a required
-# path segment that the spec describes only as "Мнемоника приложения", with no enum, no example
-# and no endpoint that lists the applications. "JAGA" is the value the live instance accepts.
+# `applicationMnemo` is a required path segment the spec never gives a value for ("Мнемоника
+# приложения", no enum, no example). "JAGA" is the value the live instance accepts.
 APPLICATION_MNEMO = "JAGA"
-# A space with more members than this reads its first 20 pages (2000 people) and logs that it
-# stopped. The cap exists so that a pathological space cannot hang a form render for minutes;
-# it is far above any space a human would pick an assignee from in a dropdown.
+# Cap on the member-list walk (2000 people), so a pathological space cannot hang a form render.
 MAX_MEMBER_PAGES = 20
-# The list of spaces rarely changes, yet the link form re-fetches it on every keystroke
-# (`updatesForm`, with no debounce). A short TTL absorbs the burst without risking a
-# stale list for long.
+# The link form re-fetches the spaces on every keystroke (`updatesForm`, no debounce); a short
+# TTL absorbs the burst.
 PROJECTS_CACHE_TTL = 60
-# The statuses of a space change only when someone edits the workflow behind it — rare, and
-# never mid-incident. Every resolve and every regression asks for them, so cache them; five
-# minutes is short enough that a workflow edit lands on its own without a restart.
+# Statuses only change when someone edits the workflow behind a space.
 STATUSES_CACHE_TTL = 300
-# A person's UUID is immutable — it is the identity itself, not a property of it. An hour is
-# simply a bound on remembering someone who has been deleted from Jaga, and on the negative
-# entries: a Sentry user with no Jaga account must not cost a round trip on every assignment.
+# A person's UUID is immutable. Misses are cached too, so a Sentry user with no Jaga account does
+# not cost a round trip on every assignment.
 PERSON_CACHE_TTL = 3600
-# The members of a space change when someone joins or leaves it — rare. Sixty seconds, like the
-# list of spaces: long enough to absorb the burst of re-renders the `updatesForm` cascade causes,
-# short enough that a new colleague appears in the dropdown without anyone restarting anything.
+# Same reasoning as PROJECTS_CACHE_TTL: the `updatesForm` cascade re-renders the form repeatedly.
 MEMBERS_CACHE_TTL = 60
 
 
 # Jaga reports "no such user" as a 400 with a `NotFoundException` inside it, so the status code
-# alone cannot be trusted to mean it. These are the markers of a genuine not-found, matched against
-# the whole body: the exception class name Jaga names, and the message it writes. Anything else
-# with a 400 is a bug on our side or a broken deployment, and has to be heard, not cached away.
+# alone cannot be trusted. These markers are matched against the whole body; any other 400 is a
+# bug on our side and must propagate rather than be cached as "no such person".
 NOT_FOUND_MARKERS = ("notfoundexception", "does not exist")
 
 
 def _looks_like_not_found(exc: JagaApiError) -> bool:
-    """Does this error actually say "no such object" — or is it merely a 400 we do not understand?
+    """Does this error really mean "no such object", or is it a 400 we do not understand?
 
-    A 404 is taken at its word. A 400 has to prove itself: on this very API a 404 has already
-    turned out to mean "Spring has no handler for that route" (`/v1/taskRole/.../executor`), and a
-    400 is also the generic validation error. Reading the body is the only way to tell a person
-    Jaga has never heard of from a request Jaga could not parse.
+    A 404 is taken at its word. A 400 has to prove itself from the body: on this API a 400 is also
+    the generic validation error, and a 404 has meant "Spring has no handler for that route".
     """
     if exc.status_code == 404:
         return True
@@ -128,9 +116,8 @@ class JagaClient:
     def _authed(self, method: str, path: str, **kwargs: Any) -> Any:
         """Send a request with a Bearer token; on a 401, re-login exactly once.
 
-        Only on a 401: in Jaga a 403 means "the token is valid, but you have no rights to
-        this object" — re-logging in will not fix that, it will only add a request and
-        mask the real cause.
+        Only on a 401: a Jaga 403 means the token is valid but lacks rights to the object, and
+        re-logging in would only mask that.
         """
         headers = dict(kwargs.pop("headers", {}))
         headers["Authorization"] = f"Bearer {self._tokens.get_access_token()}"
@@ -160,8 +147,8 @@ class JagaClient:
     def get_projects(self) -> list[Project]:
         """Every available space (across all pages), with a short-lived cache.
 
-        The cache is shared with the token (in production, Sentry's Django cache), so it
-        outlives a single HTTP request: the link form fetches this list on every keystroke.
+        The cache is shared with the token (in production, Sentry's Django cache), so it outlives
+        a single HTTP request — the link form fetches this list on every keystroke.
         """
         cached = self._cache.get(self._projects_cache_key)
         if cached is not None:
@@ -205,27 +192,11 @@ class JagaClient:
     def get_space_users(self, space_id: int) -> list[tuple[str, str]]:
         """Members of a space a task can be assigned to: (email, displayName) pairs.
 
-        The value is an EMAIL, not the person UUID the `task.assignee_uuid` attribute ultimately
-        takes. That is deliberate, and it is the whole reason the assignee select works at all:
-
-        * the member list gives no UUID. Only three endpoints in the whole API return one, and
-          two of them are unusable here (see `_space_members`), leaving `find_person_by_email`
-          — which resolves ONE person per call.
-        * so filling a select of N members with UUIDs would cost N HTTP calls before the create
-          form can be drawn. A space with fifty people would hang the form for seconds, every
-          time it is opened.
-
-        Carrying the email instead costs nothing to list, and the UUID is resolved for the one
-        person who was actually picked, at submit time — one call instead of N. See
-        `issue_config.resolve_assignee_cells`.
-
-        Members with no email are dropped: they cannot be resolved later, so offering them would
-        only build a form whose submit fails.
-
-        Cached, like the spaces and the statuses are, and for the same reason: the create form's
-        space and type selects both carry `updatesForm`, so Sentry re-renders the whole form —
-        and re-runs this — every time either is touched. Uncached, that would be a fresh walk of
-        every page of the member list on each of those renders.
+        The value is an EMAIL, not the person UUID that `task.assignee_uuid` finally takes: the
+        member list carries no UUID, and `find_person_by_email` resolves only ONE per call, so
+        UUIDs here would cost N HTTP calls before the form can be drawn. The pick is resolved at
+        submit time instead — see `issue_config.resolve_assignee_cells`. Members with no email
+        are dropped; they could not be resolved later.
         """
         cache_key = f"{self._members_cache_prefix}:{space_id}"
         cached = self._cache.get(cache_key)
@@ -242,20 +213,13 @@ class JagaClient:
     def _space_members(self, space_id: int) -> list[dict[str, Any]]:
         """The people in a space — from the user-role matrix, not from the documented endpoint.
 
-        `GET /v1/project/getUserProfileDtos/{space}` is what the API documents for this, and it
-        is what this client used to call. Against the live instance it answers 200 with an empty
-        list for EVERY space — including one whose owner is the very account asking. It does not
-        fail; it silently reports that nobody is there, and the assignee select rendered empty
-        with no error anywhere. That is the bug this replaced.
+        The documented `GET /v1/project/getUserProfileDtos/{space}` answers `200 []` for EVERY
+        space on the live instance, so it is dead: it silently reports that nobody is there. The
+        role matrix answers properly and is tried first (see `APPLICATION_MNEMO`).
 
-        The matrix answers properly. `applicationMnemo` is a required path segment that the spec
-        documents as "Мнемоника приложения" and never gives a single value for; "JAGA" is the one
-        the instance accepts.
-
-        It is still tried the documented way first — but only as a fallback, when the matrix
-        itself errors (an instance that names its application something else). An EMPTY matrix is
-        taken at face value: a space really can have no members, and quietly falling back on a
-        second empty answer would only hide it again.
+        `getUserProfileDtos` is kept only as a fallback for when the matrix ERRORS (an instance
+        whose application is named something else). An EMPTY matrix is taken at face value — a
+        space really can have no members, and falling back would just hide the dead endpoint again.
         """
         try:
             return self._fetch_matrix_members(space_id)
@@ -277,12 +241,10 @@ class JagaClient:
     def _fetch_matrix_members(self, space_id: int) -> list[dict[str, Any]]:
         """Every page of the user-role matrix, flattened to the people in it.
 
-        The matrix is a page of ROLES, each carrying the users that hold it, so one person shows
-        up once per role they have — hence the dedupe. Groups are dropped: a group cannot be the
-        executor of a task, and `find_person_by_email` would never resolve one.
-
-        Every member here carries `id`, and that id is the TEAM id, not the Core id (see
-        `Person`). Nothing reads it: the email is what travels.
+        The matrix pages over ROLES, each carrying its users, so one person appears once per role
+        they hold — hence the dedupe. Groups are dropped: a group cannot be a task's executor.
+        A member's plain `id` here is the TEAM id, not the Core id (see `Person`); nothing reads
+        it, the email is what travels.
         """
         by_email: dict[str, dict[str, Any]] = {}
         page = 0
@@ -292,11 +254,9 @@ class JagaClient:
                 f"/v1/team/userRoles/applications/{APPLICATION_MNEMO}/projects/{space_id}",
                 params={"page": page, "size": DEFAULT_PAGE_SIZE},
             )
-            # A page is a dict, and an answer that is not one is an answer we cannot read. Raising
-            # a `JagaApiError` — rather than letting `.get` blow up with an `AttributeError` — is
-            # what lets `_space_members` catch it and fall back; an AttributeError would sail past
-            # its `except` and take the whole create form down with it. This API has already
-            # returned shapes its own spec did not promise, five times over.
+            # Raise a `JagaApiError` rather than let `.get` blow up with an `AttributeError`:
+            # only the former is caught by `_space_members`, which then falls back. An
+            # AttributeError would sail past its `except` and take the create form down.
             if not isinstance(payload, dict):
                 raise JagaApiError(
                     200, f"the member list of space {space_id} is not a page", body=payload
@@ -319,20 +279,14 @@ class JagaClient:
         return list(by_email.values())
 
     def find_person_by_email(self, email: str) -> Person | None:
-        """The one door to a person's UUID. Returns None only when Jaga *says* it knows no such
-        email — and raises on everything else.
+        """The one door to a person's UUID. Returns None only when Jaga says it knows no such
+        email, and raises on everything else.
 
-        Jaga answers an unknown email with HTTP **400**, not 404, and buries a `NotFoundException`
-        with "User with email ... does not exists" in the body. So a 400 here has to be read, not
-        assumed: a blanket "400 means nobody" would swallow OUR OWN bugs — a renamed field, a
-        moved route, a WAF in front of the API — and turn them into a confident, hour-long cached
-        "that person does not exist", about people who are standing right there in the dropdown.
-        That is the exact failure this whole change was written to kill (`_space_members`), and it
-        must not be reintroduced one layer down. `_looks_like_not_found` is what tells the two
-        apart, and an unrecognised 400 propagates.
-
-        A person's UUID never changes, so the answer is cached for an hour — the miss too, so that
-        a Sentry user with no Jaga account does not cost a round trip on every assignment.
+        Jaga answers an unknown email with HTTP **400**, not 404, burying a `NotFoundException`
+        ("User with email ... does not exists") in the body. So the body has to be read: treating
+        every 400 as "nobody" would swallow our own bugs (a renamed field, a moved route, a WAF)
+        and cache them for an hour as "that person does not exist". `_looks_like_not_found` tells
+        the two apart; an unrecognised 400 propagates. Hits and misses are both cached.
         """
         address = email.strip()
         if not address:
@@ -356,10 +310,9 @@ class JagaClient:
         if not isinstance(payload, dict) or not payload.get("uuid"):
             return None
 
-        # The endpoint is find-by-mail-OR-NAME, and we asked it by mail. Nothing in its contract
-        # promises an exact match, and a fuzzy one would hand back a different human — whom we
-        # would then assign a real task to, silently and with total confidence. A mismatch is
-        # treated as "not found", which is the safe reading of an answer we did not ask for.
+        # The endpoint is find-by-mail-OR-NAME and promises no exact match, so a fuzzy hit could
+        # hand back a different human — who would then be assigned a real task. A mismatch is
+        # treated as "not found".
         found = Person.from_api(payload)
         if found.email.lower() != address.lower():
             logger.warning(
@@ -374,16 +327,13 @@ class JagaClient:
     def set_task_assignees(self, task_id: int, field_id: int, person_uuids: list[str]) -> None:
         """Set (or clear) the people a task is assigned to.
 
-        This is an attribute write, not a role change. `PUT /v1/taskRole/task/{id}/executor` is
-        what the spec offers for this and it DOES NOT EXIST on the instance — it 404s with
-        `No static resource taskAssignee/task/.../executor`, i.e. Spring has no handler for that
-        route at all. The assignee is the ordinary EAV attribute `task.assignee_uuid`, and
-        `PATCH /v1/task/{taskId}` takes exactly the cell the create already builds.
+        This is an attribute write, not a role change: the spec's `PUT /v1/taskRole/task/{id}/
+        executor` does not exist on the instance (404, `No static resource ...`). The assignee is
+        the ordinary EAV attribute `task.assignee_uuid`, written through `PATCH /v1/task/{taskId}`.
 
-        Verified against a live instance: the value travels as a LIST (the attribute is
-        `multiple`), and writing it fills the task's top-level `executors` too — the attribute IS
-        what Jaga's UI calls the executor. An empty list clears the field, which is what an
-        unassignment in Sentry has to do.
+        Verified live: the value travels as a LIST (the attribute is `multiple`) and writing it
+        also fills the task's top-level `executors`. An EMPTY list CLEARS the assignee, which is
+        what an unassignment in Sentry has to do.
         """
         self._authed(
             "PATCH",
@@ -400,10 +350,10 @@ class JagaClient:
     def get_space_statuses(self, space_id: int) -> list[Status]:
         """The statuses reachable inside one space, with a short-lived cache.
 
-        This endpoint — and NOT `/v1/taskStatusRef` — is what makes the status sync possible.
-        `/v1/taskStatusRef` answers with every status the instance knows: ~90k of them over
-        ~15k workflows, because each workflow owns its own copies of the same handful of
-        statuses. Scoped to a space, the same data is a list of three or four.
+        Not `/v1/taskStatusRef`: that returns every status the instance knows — ~90k of them over
+        ~15k workflows, since each workflow owns copies of the same handful. Scoped to a space it
+        is a list of three or four. (This is also why status mapping keys on the category; see
+        `Status`.)
         """
         key = f"{self._statuses_cache_prefix}:{space_id}"
         cached = self._cache.get(key)
@@ -418,9 +368,8 @@ class JagaClient:
     def get_labels(self) -> list[tuple[str, str]]:
         """Every label, as (id, name) pairs — the value of `task.label_id` is the label id.
 
-        Labels have no dictionary of their own: `/v1/listRef` knows nothing about them, and
-        the only listing endpoint is this POST. Every field of the request body is optional;
-        an empty `searchText` means "no filter".
+        Labels have no dictionary of their own (`/v1/listRef` knows nothing of them); this POST is
+        the only listing endpoint. An empty `searchText` means "no filter".
         """
         payload = self._authed(
             "POST",
@@ -435,20 +384,16 @@ class JagaClient:
     def get_or_create_label(self, name: str) -> int:
         """The id of the label with this name — created on the spot if Jaga has no such label.
 
-        `/v1/labels/list` is a get-or-create, despite the name: it answers with the labels named
-        in the body and makes the ones that do not exist yet. Verified against a live instance —
-        called twice with the same name, it returns the same id both times.
-
-        There is no other way round it: the auto-label has to be an id by the time the task is
-        created, and a Jaga instance that has never seen this integration has no such label yet.
-        `/v1/labels/getPage` (see `get_labels`) only lists what already exists.
+        `/v1/labels/list` is a get-or-create despite its name: it returns the labels named in the
+        body and creates the missing ones. Verified live — called twice with the same name it
+        returns the same id. It is needed because the auto-label must already be an id when the
+        task is created, and `/v1/labels/getPage` (see `get_labels`) only lists what exists.
         """
         payload = self._authed("POST", "/v1/labels/list", json={"names": [name]})
         labels = payload.get("labels") or [] if isinstance(payload, dict) else []
         if not labels:
-            # The endpoint is a get-or-create: an empty answer means it neither found nor made
-            # the label, and there is no id to put on the task. Say so instead of failing later
-            # on an IndexError.
+            # A get-or-create that returns nothing neither found nor made the label; fail here
+            # rather than on an IndexError.
             raise JagaError(f"Jaga returned no label for {name!r}.")
         return int(labels[0]["id"])
 
@@ -476,20 +421,16 @@ class JagaClient:
     def search_tasks_globally(self, text: str, *, size: int = 20) -> list[TaskRef]:
         """Search tasks across every space the service account can see.
 
-        This is what `/v1/task/searchByTitleCode` cannot do: that one demands a `projectId` and
-        searches inside one space, which is why linking used to make the user pick a space first.
+        `/v1/task/searchByTitleCode` cannot do this — it demands a `projectId` and searches one
+        space. Two facts confirmed live:
 
-        Two things about this endpoint are worth knowing, both confirmed against a live instance:
+        * the spec declares the response `array<TaskPageApiDto>`; the wire returns a single page
+          OBJECT. The spec is wrong.
+        * a result's title lives in its EAV `attributes`, and `projectId`/`projectCode`/
+          `projectTitle` come back null — the space is simply not in this answer.
 
-        * the spec declares the response as `array<TaskPageApiDto>`; what comes back is a single
-          page OBJECT. The spec is wrong — this follows the wire.
-        * a task in the results carries its title inside `attributes` (Jaga's EAV, same as
-          anywhere else), and its `projectId`/`projectCode`/`projectTitle` come back **null** —
-          so the space a task lives in simply is not in this answer. Hence `TaskRef.title` is
-          read out of the attributes, and the caller shows the code and the title, nothing more.
-
-        The body is the filter, and an empty list means "no filter" — the whole query is the
-        `query` parameter.
+        The body is the filter; an empty list means "no filter" and the whole query is the `query`
+        parameter.
         """
         payload = self._authed(
             "POST",
@@ -508,14 +449,13 @@ class JagaClient:
     ) -> dict[str, Any]:
         """Upload a file and attach it to a task. Returns the attachment Jaga created.
 
-        The summary of `/v1/attacher/file/create` reads "upload attachment without binding to
-        entity", and the endpoint takes a `taskId` anyway — verified against a live instance:
-        with it, the file lands ON the task, not in limbo. `projectId` is mandatory (Jaga files
-        every attachment under a space), which is why the space has to be passed down here even
-        though the task already knows which one it lives in.
+        `/v1/attacher/file/create` is summarised as "upload attachment without binding to entity"
+        yet takes a `taskId` anyway — verified live, the file lands ON the task. `projectId` is a
+        mandatory query param (Jaga files every attachment under a space), which is why the space
+        must be passed in even though the task already knows it.
 
-        `requests` builds the multipart body from `files=` — including its boundary, which is why
-        no Content-Type header of ours may go with it. `_send` passes `files=` straight through.
+        `requests` builds the multipart body and its boundary from `files=`, so we must not set a
+        Content-Type header of our own.
         """
         payload = self._authed(
             "POST",
@@ -528,10 +468,10 @@ class JagaClient:
     def transition_task(self, task_id: int, target_status_id: int) -> None:
         """Move a task to another status.
 
-        `formFields` is declared required by the API, and an empty list is accepted: verified
-        against a live instance, in both directions ("Сделать" -> "Готово" -> "Сделать"). A
-        transition whose workflow demands a filled form would be refused here — the caller
-        (`issue_config.apply_status_sync`) falls back to a comment on any Jaga error.
+        `formFields` is declared required, and an empty list IS accepted — verified live in both
+        directions ("Сделать" -> "Готово" -> "Сделать"). A transition whose workflow demands a
+        filled form is refused; `issue_config.apply_status_sync` falls back to a comment on any
+        Jaga error.
         """
         self._authed(
             "POST",
@@ -542,11 +482,8 @@ class JagaClient:
     def create_comment(self, task_id: int, content: str) -> dict[str, Any]:
         """Post a comment and return it as Jaga created it — `id` included.
 
-        The `id` is what makes an edit possible later: Sentry keeps it on the note and hands it
-        back to `update_comment` when the note is edited (see `issue_config.post_task_comment`).
-        Jaga answers a create with the whole `CommentApiDto`; the guard is for the day it
-        answers 200 with an empty body, which would otherwise blow up in the caller as a
-        `TypeError` on `dict(None)`.
+        Sentry keeps that `id` on the note and hands it back to `update_comment` when the note is
+        edited (see `issue_config.post_task_comment`).
         """
         payload = self._authed(
             "POST",
@@ -558,8 +495,8 @@ class JagaClient:
     def update_comment(self, comment_id: int, task_id: int, content: str) -> dict[str, Any]:
         """Rewrite an existing comment.
 
-        `taskId` travels along with the id because Jaga's `CommentApiDto` declares it required
-        on the update as well as on the create — the endpoint takes the same schema both ways.
+        `taskId` travels with the id because `CommentApiDto` declares it required on the update
+        as well as on the create — the endpoint takes the same schema both ways.
         """
         payload = self._authed(
             "PUT",

@@ -100,11 +100,9 @@ class Attribute:
 class TaskRef:
     """A task, reduced to what Sentry needs of it: the id, the code, the title.
 
-    There is no `from_api` here, unlike every other model: Jaga has no one DTO this maps from.
-    A create answers with a `TaskApiDto` that carries no title at all, and the global search
-    answers with a reduced DTO whose title is buried in the EAV `attributes` — so both callers
-    build a `TaskRef` from what they actually got (see `JagaClient.create_task` and
-    `JagaClient.search_tasks_globally`).
+    No `from_api`, unlike the other models: Jaga has no single DTO this maps from. A create
+    answers with a `TaskApiDto` carrying no title at all, and the global search answers with a
+    reduced DTO whose title is buried in the EAV `attributes`, so each caller builds its own.
     """
 
     id: int
@@ -116,11 +114,11 @@ class TaskRef:
 class Status:
     """A task status inside one workflow.
 
-    `category` is `categoryNameM` — the mnemonic of the status *category*
-    (`status.category.done` and friends). It is the only part of a status that is stable
-    across the instance: a live instance carries ~90k statuses over ~15k workflows, all of
-    them variations on the same handful of categories. The status sync therefore keys on the
-    category and resolves the concrete `id` per space; see `issue_config.resolve_target_status`.
+    `category` is `categoryNameM`, the mnemonic of the status *category* (`status.category.done`
+    and friends) — the only part of a status that is stable instance-wide: a live instance carries
+    ~90k statuses over ~15k workflows, all variations on the same handful of categories. So the
+    status sync keys on the category and resolves the `id` per space; see
+    `issue_config.resolve_target_status`.
     """
 
     id: int
@@ -138,23 +136,21 @@ class Status:
 
 @dataclass(frozen=True, slots=True)
 class Person:
-    """A Jaga user, and the reason this class exists at all: they have TWO numeric ids.
+    """A Jaga user — and the reason this class exists: one human has TWO unrelated numeric ids.
 
-    Jaga is two services behind one API, and each keeps its own id for the same human:
+    Jaga is two services behind one API, each keeping its own id:
 
-    * `uuid`    — `personUuid`, the cross-system identifier. This, and nothing else, is what the
-                  `task.assignee_uuid` attribute takes. Assigning a task means writing this.
+    * `uuid`    — `personUuid`, the cross-system identifier and the ONLY thing the
+                  `task.assignee_uuid` attribute takes.
     * `core_id` — "Идентификатор пользователя (Core)". What a task's `executors` are keyed by.
     * `team_id` — "Идентификатор пользователя (Team)".
 
-    They are unrelated numbers for one person (on the instance this was written against: core
-    193688, team 365474). The trap is that the member list — the user-role matrix — returns the
-    *team* id in a field called plain `id`, so code that reads `member["id"]` and calls it "the
-    user id" is holding the wrong one and will not find out until Jaga 404s. Naming all three
-    here, once, is the fix: nothing downstream passes a bare int around.
+    The trap: the user-role matrix returns the *team* id in a field called plain `id`, so
+    `member["id"]` is not "the user id" and nothing finds out until Jaga 404s. Naming all three
+    here means nothing downstream passes a bare int around.
 
-    Only `POST /v1/team/userProfile/findByMailOrName` hands back all three at once, keyed by
-    email — which is why an email is what the plugin carries between Sentry and Jaga.
+    Only `POST /v1/team/userProfile/findByMailOrName` returns all three at once, keyed by email —
+    which is why the plugin carries emails between Sentry and Jaga.
     """
 
     uuid: str

@@ -42,8 +42,8 @@ from sentry_jaga.issue_config import (
     status_comment,
 )
 
-# The attributes of a real Jaga task type ("Стандарт"), as the live instance reports them —
-# including the two Jaga demands inside `attributes` even though they are already in the URL.
+# The attributes of a real Jaga task type ("Стандарт"), including the two Jaga demands inside
+# `attributes` even though they are already in the create URL.
 SPACE = Attribute(id=90, name="Space", object_type_name_m=SPACE_OBJECT_TYPE, required=True)
 TYPE = Attribute(id=91, name="Task type", object_type_name_m=TYPE_OBJECT_TYPE, required=True)
 TITLE = Attribute(id=100, name="Title", object_type_name_m=TITLE_OBJECT_TYPE, required=True)
@@ -56,7 +56,7 @@ LABEL = Attribute(id=104, name="Label", object_type_name_m=LABEL_OBJECT_TYPE, mu
 PRIORITY = Attribute(id=102, name="Priority", object_type_name_m="task.priority_id")
 CREATOR = Attribute(id=92, name="Author", object_type_name_m=CREATOR_OBJECT_TYPE)
 CREATE_TS = Attribute(id=93, name="Created at", object_type_name_m=CREATE_TS_OBJECT_TYPE)
-# A dictionary-backed attribute — the only reference kind that lists itself.
+# A dictionary-backed attribute: the only reference kind that lists itself.
 SEVERITY = Attribute(
     id=110,
     name="Severity",
@@ -78,10 +78,9 @@ REAL_ATTRIBUTES = [
     SEVERITY,
 ]
 
-# The assignee select carries EMAILS, not the person UUIDs the attribute finally stores: a UUID
-# costs one HTTP call per person (`find_person_by_email` is the only endpoint that returns one),
-# so they are resolved for whoever was picked at submit time, not for every member at render
-# time. `PEOPLE` is the Jaga directory the fake resolves them against.
+# The assignee select carries EMAILS, not the person UUIDs the attribute stores: a UUID costs one
+# HTTP call per person, so it is resolved at submit time for whoever was picked. `PEOPLE` is the
+# Jaga directory the fake resolves them against.
 USERS = [("ivanov@example.com", "Ivanov Ivan"), ("petrov@example.com", "Petrov Petr")]
 PEOPLE = {
     "ivanov@example.com": Person(
@@ -95,10 +94,8 @@ LABELS = [("7", "backend"), ("8", "frontend")]
 # The id a live Jaga answered `POST /v1/labels/list {"names": ["sentry"]}` with.
 AUTO_LABEL_ID = 17834
 
-# The statuses of the live test space, exactly as `workflowStatusesAvail` returns them (three,
-# not the ~90k of the global list). Jaga's own names, kept verbatim. RUF001 objects to the
-# one-letter Cyrillic preposition below, which it reads as a Latin "B" — Jaga's name is what
-# it is.
+# The statuses of one space, as `workflowStatusesAvail` returns them, Jaga's own names kept
+# verbatim. RUF001 reads the one-letter Cyrillic preposition below as a Latin "B".
 IN_PROGRESS_NAME = "В работе"  # noqa: RUF001
 TODO_STATUS = Status(id=107391, name="Сделать", category=CATEGORY_TODO)
 IN_PROGRESS_STATUS = Status(id=107389, name=IN_PROGRESS_NAME, category=CATEGORY_IN_PROGRESS)
@@ -116,14 +113,13 @@ def raw_task(
     with_space: bool = True,
     with_assignee: bool = True,
 ) -> dict[str, Any]:
-    """A task as `findExtendedWithFlexField` returns it: the space is an ordinary attribute,
-    and the statuses it can move to are listed on the task itself."""
+    """A task as `findExtendedWithFlexField` returns it: the space is an ordinary attribute, and
+    the statuses it can move to are listed on the task itself."""
     attributes: list[dict[str, Any]] = [
         {"fieldId": 100, "value": "Login is broken", "objectTypeNameM": TITLE_OBJECT_TYPE}
     ]
     if with_assignee:
-        # A task's own cells carry their `fieldId` — which is how the assignee sync gets the id it
-        # needs to PATCH, without a second round trip to the task type.
+        # A cell carries its own `fieldId`, which is what spares the assignee sync a round trip.
         attributes.append({"fieldId": 103, "value": [], "objectTypeNameM": ASSIGNEE_OBJECT_TYPE})
     if with_space:
         attributes.append({"fieldId": 90, "value": space_id, "objectTypeNameM": SPACE_OBJECT_TYPE})
@@ -131,7 +127,6 @@ def raw_task(
         "id": TASK_ID,
         "code": "PLT-500",
         "status": {"id": TODO_STATUS.id, "name": TODO_STATUS.name},
-        # From "Сделать" the live workflow reaches the in-progress and the done status.
         "statusTransitions": [IN_PROGRESS_STATUS.id, DONE_STATUS.id]
         if transitions is None
         else transitions,
@@ -228,7 +223,6 @@ class FakeClient:
 
     def create_comment(self, task_id: int, content: str) -> dict[str, Any]:
         self.comments.append((task_id, content))
-        # Jaga answers a create with the whole comment; Sentry reads `id` out of it.
         return {"id": 900 + len(self.comments), "taskId": task_id, "contentComment": content}
 
     def update_comment(self, comment_id: int, task_id: int, content: str) -> dict[str, Any]:
@@ -273,17 +267,9 @@ def test_create_config_builds_cascade() -> None:
 def test_create_config_hides_the_attributes_the_cascade_already_asks_for(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """`task.project_id` and `task.type_id` are required attributes of the task type, but the
-    `project` / `issue_type` selects already carry them. Rendering them too would show the user
-    two "Space" boxes — one of which does not drive the cascade. They go into the payload
-    instead (see `test_create_task_from_form_injects_space_and_type`).
-
-    The author and the creation date are Jaga's to fill; asking the user for them is nonsense.
-
-    Dropped on purpose, and not as collateral of the "cannot render this" rule: both are
-    `required`, so falling through to that rule would log a warning blaming two fields the
-    plugin actually submits — right in the log of whoever is debugging a failed create.
-    """
+    """The cascade selects already carry the space and the type, and the author and creation date
+    are Jaga's to fill: they are dropped ON PURPOSE, so no "unsupported required attribute" warning
+    may blame two fields the plugin does in fact submit."""
     with caplog.at_level(logging.WARNING, logger="sentry_jaga.fields"):
         fields = build_create_config(FakeClient(), {}, "t", "d")
 
@@ -316,7 +302,7 @@ def test_create_config_renders_labels() -> None:
 
 
 def test_create_config_skips_an_unsupported_reference_attribute() -> None:
-    """Priority is a reference with no dictionary: we cannot list its values, so it is left out
+    """Priority is a reference with no dictionary: its values cannot be listed, so it is left out
     rather than rendered as a text box the user would fill with "High"."""
     fields = build_create_config(FakeClient(), {}, "t", "d")
     assert "attr_102" not in _by_name(fields)
@@ -338,8 +324,8 @@ def test_create_config_warns_about_a_required_attribute_it_cannot_render(
 
 
 def test_create_config_does_not_fetch_users_or_labels_when_unused() -> None:
-    """A task type without assignees or labels must not pay an HTTP request per form render —
-    and the create form re-renders on every keystroke of the cascade."""
+    """The create form re-renders on every change of the cascade, so a task type without assignees
+    or labels must not pay an HTTP request per render."""
     client = FakeClient(attributes=[TITLE, DESCRIPTION])
 
     build_create_config(client, {}, "t", "d")
@@ -370,13 +356,8 @@ def test_create_config_honours_selected_params() -> None:
 
 
 def test_create_config_drops_task_type_left_over_from_previous_project() -> None:
-    """Switching the space while an `issue_type` from the previous one is still stuck.
-
-    On `updatesForm`, Sentry resends EVERY form field, not only the one that changed: after
-    `project` is switched, `params` arrives carrying the `issue_type` of the OLD space.
-    Taking it at face value means a 404 from Jaga or, worse, a silently created task of a
-    foreign type. We expect a fall back to the first type of the new space.
-    """
+    """On `updatesForm` Sentry resends EVERY field, so after a space switch `params` still carries
+    the OLD space's `issue_type` — taken at face value, that files a task of a foreign type."""
     client = FakeClient(
         projects=[Project(1, "Platform", "PLT"), Project(2, "Billing", "BIL")],
         task_types_by_project={
@@ -385,13 +366,11 @@ def test_create_config_drops_task_type_left_over_from_previous_project() -> None
         },
     )
 
-    # The user switched the space to 2, while issue_type=10 is left over from space 1.
     fields = build_create_config(client, {"project": "2", "issue_type": "10"}, "t", "d")
     by_name = _by_name(fields)
 
     assert by_name["issue_type"]["default"] == "20"
     assert by_name["issue_type"]["choices"] == [("20", "Incident"), ("21", "Request")]
-    # And the attributes were requested for the type of the NEW space, not a foreign one.
     assert client.attributes_requested == [(2, 20)]
 
 
@@ -429,14 +408,9 @@ def test_create_config_without_task_types_stops_at_project() -> None:
 
 
 def test_create_task_from_form_injects_space_and_type() -> None:
-    """REGRESSION. Jaga answers 500 to a create whose `attributes` omit `task.project_id` and
-    `task.type_id` — "Поле "Пространство" обязательно для заполнения" — even though both ids
-    are already in the URL of `POST /v1/task/createByTaskType/{project}/{type}`.
-
-    Neither has a form field of its own (the cascade selects play that role), so the payload
-    built from `attr_*` keys alone can never contain them, and EVERY create from Sentry used
-    to fail. Both cells must be there, carrying the ids the user picked, marked as references.
-    """
+    """REGRESSION: Jaga answers 500 to a create whose `attributes` omit `task.project_id` and
+    `task.type_id`, even though both ids are already in the create URL — and neither has a form
+    field of its own, so a payload built from `attr_*` keys alone can never contain them."""
     client = FakeClient()
 
     create_task_from_form(
@@ -462,17 +436,9 @@ def test_create_task_from_form_injects_space_and_type() -> None:
 
 
 def test_create_task_from_form_accepts_the_payload_an_alert_rule_sends() -> None:
-    """The exact `data` an alert rule hands to `create_issue()` must produce a titled task.
-
-    `sentry.rules.actions.integrations.create_ticket.utils.create_issue` takes the action's
-    saved config (space, task type, and whatever else the admin picked), overwrites `title`
-    and `description` with the event's own, and calls `installation.create_issue(data)`. The
-    space/type keys come from the saved rule; the title and the body come from the event and
-    were NOT in the rule config at all.
-
-    This is the whole of what a ticket rule does on our side — if the title does not land in
-    the Jaga title cell, every task filed by a rule is nameless.
-    """
+    """A ticket rule hands `create_issue` its saved config with `title`/`description` overwritten
+    from the event that fired: if the title misses the Jaga title cell, every task a rule files is
+    nameless."""
     client = FakeClient()
 
     result = create_task_from_form(
@@ -497,7 +463,6 @@ def test_create_task_from_form_accepts_the_payload_an_alert_rule_sends() -> None
     assert description_cell is not None
     assert "created automatically" in description_cell["value"]
 
-    # And the ExternalIssue Sentry records for the rule-created task is named after the event.
     assert result["title"] == "ZeroDivisionError: division by zero"
 
 
@@ -527,8 +492,8 @@ def test_create_task_from_form_sends_attributes() -> None:
 
 
 def test_create_task_from_form_swaps_the_chosen_emails_for_uuids() -> None:
-    """The select submits emails; Jaga stores UUIDs. Only the people actually picked are looked
-    up — one call each, at submit — instead of every member of the space at render time."""
+    """The select submits emails and Jaga stores UUIDs: only the people actually picked are looked
+    up, one call each at submit, instead of every member of the space at render time."""
     client = FakeClient()
     create_task_from_form(
         client,
@@ -557,9 +522,8 @@ def test_create_task_from_form_swaps_the_chosen_emails_for_uuids() -> None:
 
 
 def test_create_task_from_form_refuses_an_assignee_jaga_does_not_know() -> None:
-    """Filing the task without the person the user deliberately picked would be a silent lie; and
-    sending an email where a UUID belongs makes Jaga refuse the whole create with a message about
-    a field the user cannot even see. Name who could not be found instead."""
+    """Filing the task without the assignee the user picked would be a silent lie, and sending an
+    email where a UUID belongs makes Jaga refuse the create: name who could not be found."""
     client = FakeClient()
 
     with pytest.raises(JagaError, match=re.escape("ghost@example.com")):
@@ -594,9 +558,8 @@ def test_create_task_from_form_rejects_empty_form() -> None:
 
 
 def test_the_create_form_carries_the_sentry_issue_in_a_hidden_field() -> None:
-    """`create_issue` is handed the form data and NOTHING else — no group, no event. A hidden
-    field is how the issue gets there: Sentry's frontend submits its default along with the rest
-    of the form."""
+    """`create_issue` is handed the form data and nothing else — no group, no event — so a hidden
+    field, whose default the frontend submits, is the only way the issue can reach it."""
     fields = build_create_config(FakeClient(), {}, "t", "d", group_id="4242")
     by_name = _by_name(fields)
 
@@ -605,17 +568,16 @@ def test_the_create_form_carries_the_sentry_issue_in_a_hidden_field() -> None:
 
 
 def test_the_form_of_an_alert_rule_carries_no_issue() -> None:
-    """The ticket-rule modal renders this form with no group and SAVES what it gets. A group id
-    in there would be frozen into the rule for good, and every task the rule ever filed would get
-    the event of one long-dead issue attached to it. Without a group there must be no field."""
+    """The ticket-rule modal renders this form with no group and SAVES what it gets: a group id in
+    there would be frozen into the rule, attaching one long-dead event to every task it files."""
     fields = build_create_config(FakeClient(), {}, "t", "d")
 
     assert GROUP_ID_FIELD not in _by_name(fields)
 
 
 def test_the_hidden_field_survives_a_task_type_less_space() -> None:
-    """The form stops at the space select when the space has no task types — and must still carry
-    the issue, or picking a space would silently throw it away."""
+    """The form stops at the space select when the space has no task types, and must still carry
+    the issue — otherwise picking a space silently throws it away."""
     client = FakeClient(task_types=[])
     fields = build_create_config(client, {}, "t", "d", group_id="4242")
 
@@ -623,7 +585,7 @@ def test_the_hidden_field_survives_a_task_type_less_space() -> None:
 
 
 def test_attach_event_json_names_the_file_after_the_event() -> None:
-    """A task can be filed from the same issue twice; two files called `sentry-event.json` on
+    """A task can be filed from the same issue twice, and two files called `sentry-event.json` on
     one task tell nobody which event is which."""
     client = FakeClient()
     attach_event_json(
@@ -656,9 +618,8 @@ def test_attach_event_json_falls_back_to_a_plain_name() -> None:
 
 
 def test_the_auto_label_is_put_on_the_task() -> None:
-    """The feature: every task filed from Sentry is tagged, so all of them can be found in Jaga
-    with one filter. The name is resolved to an id through a get-or-create, because a Jaga that
-    has never seen this integration does not have the label yet."""
+    """Every task filed from Sentry is tagged so that one Jaga filter finds them all; the name is
+    resolved through a get-or-create, since a fresh Jaga does not have the label yet."""
     client = FakeClient()
     create_task_from_form(
         client,
@@ -677,8 +638,8 @@ def test_the_auto_label_is_put_on_the_task() -> None:
 
 
 def test_the_auto_label_joins_the_labels_the_user_picked() -> None:
-    """`task.label_id` is `multiple`, and the form offers it: a user may have picked labels of
-    their own. The automatic one is added to that choice, never written over it."""
+    """`task.label_id` is `multiple` and the form offers it, so the automatic label joins whatever
+    the user picked instead of overwriting it."""
     client = FakeClient()
     create_task_from_form(
         client,
@@ -713,8 +674,8 @@ def test_a_blank_auto_label_is_not_a_label() -> None:
 
 
 def test_a_task_type_without_labels_is_filed_without_one() -> None:
-    """Not every task type has a label attribute. Such a type must still be filable — and must
-    not cost a get-or-create whose id could only go into a cell Jaga would reject."""
+    """Not every task type has a label attribute, and such a type must still be filable — without
+    a get-or-create whose id could only go into a cell Jaga would reject."""
     client = FakeClient(attributes=[SPACE, TYPE, TITLE, DESCRIPTION])
     create_task_from_form(
         client,
@@ -729,8 +690,8 @@ def test_a_task_type_without_labels_is_filed_without_one() -> None:
 
 
 def test_a_task_created_without_an_auto_label_argument_carries_none() -> None:
-    """The core defaults to no label: the name comes from the organization's config, which only
-    the Sentry layer can read."""
+    """The core defaults to no label: the name comes from the organization config, which only the
+    Sentry layer can read."""
     client = FakeClient()
     create_task_from_form(client, {"project": "1", "issue_type": "10", "title": "t"})
 
@@ -740,8 +701,8 @@ def test_a_task_created_without_an_auto_label_argument_carries_none() -> None:
 
 
 def test_create_task_from_form_returns_task_id_in_metadata() -> None:
-    """`metadata` travels into `ExternalIssue`. Without `task_id`, every resolve would look
-    the task up by code again — even though Jaga has just returned the id itself."""
+    """`metadata` travels into `ExternalIssue`: without `task_id` every resolve would look the task
+    up by code again, though Jaga has just returned the id."""
     result = create_task_from_form(
         FakeClient(), {"project": "1", "issue_type": "10", "title": "Login is broken"}
     )
@@ -750,9 +711,8 @@ def test_create_task_from_form_returns_task_id_in_metadata() -> None:
 
 
 def test_warns_when_no_system_attribute_recognised(caplog: pytest.LogCaptureFixture) -> None:
-    """The title/description mnemonics hold on the instance we probed, but they are not a
-    documented contract. If not a single one is recognised, the miss must not degrade
-    silently: the form would come out with no title and no Sentry context."""
+    """The title/description mnemonics are not a documented contract, and a form that recognised
+    none of them would come out with no title and no Sentry context — silently."""
     exotic = Attribute(id=200, name="Subject", object_type_name_m="task.subject_line")
 
     with caplog.at_level(logging.WARNING, logger="sentry_jaga.issue_config"):
@@ -774,8 +734,8 @@ def test_does_not_warn_when_system_attributes_are_present(
 
 
 def test_link_config_searches_every_space_at_once() -> None:
-    """The feature: no space to pick first. Jaga's per-space search demands a `projectId`, which
-    is why linking used to open with a space select; the global search does not."""
+    """No space to pick first: Jaga's per-space search demands a `projectId`, the global one does
+    not."""
     client = FakeClient()
     fields = build_link_config(client, {"query": "login"})
     by_name = _by_name(fields)
@@ -786,8 +746,8 @@ def test_link_config_searches_every_space_at_once() -> None:
 
 
 def test_link_config_no_longer_asks_for_a_space() -> None:
-    """The space select is gone from BOTH shapes of the form — and with it the only reason the
-    link form ever had to ask Jaga for the list of spaces."""
+    """The space select is gone from BOTH shapes of the form, and with it the only reason the link
+    form had to ask Jaga for the list of spaces."""
     client = FakeClient(projects=[])
 
     fallback = _by_name(build_link_config(client, {"query": "login"}))
@@ -800,9 +760,8 @@ def test_link_config_no_longer_asks_for_a_space() -> None:
 
 
 def test_link_config_shows_the_code_and_the_title_only() -> None:
-    """The global search returns a task's `projectId`/`projectCode`/`projectTitle` as null, and
-    reading each hit's space back — one fetch per suggestion, per keystroke — is not worth a word
-    in a dropdown. So a suggestion is `code — title`."""
+    """The global search returns a task's space as null, and reading it back would cost one fetch
+    per suggestion per keystroke — so a suggestion is `code — title`."""
     by_name = _by_name(build_link_config(FakeClient(), {"query": "login"}))
 
     assert by_name["externalIssue"]["choices"] == [("PLT-5", "PLT-5 — Login is broken")]
@@ -814,9 +773,8 @@ def test_link_config_without_query_has_no_choices() -> None:
 
 
 def test_link_config_does_not_search_below_min_query_length() -> None:
-    """`updatesForm` re-fetches the config on EVERY keystroke, Sentry has no debounce, and an
-    external package cannot ship its own JS. A minimum query length is the only server-side
-    brake: below `MIN_QUERY_LENGTH` we do not call Jaga at all."""
+    """`updatesForm` re-fetches the config on EVERY keystroke with no debounce, so the minimum
+    query length is the only brake there is."""
     client = FakeClient()
     short = "l" * (MIN_QUERY_LENGTH - 1)
 
@@ -851,13 +809,8 @@ def test_link_config_help_states_the_minimum_query_length() -> None:
 
 
 def test_link_config_with_a_search_url_builds_an_async_select() -> None:
-    """Given a URL, the task picker becomes a live autocomplete.
-
-    `url` on a select field is the whole mechanism: Sentry's frontend (`getFieldProps`) turns
-    the field async only when it sees one, and then calls the endpoint — debounced — as the
-    user types. The `query` text box exists purely to work around not having this, so it must
-    be gone; leaving it would mean two search boxes for one search.
-    """
+    """`url` on a select is what makes Sentry's frontend render it as a debounced autocomplete;
+    the `query` box only stands in for that, so it must be gone rather than doubled."""
     client = FakeClient()
 
     fields = build_link_config(client, {}, search_url="/extensions/jaga/search/o/1/")
@@ -873,8 +826,8 @@ def test_link_config_with_a_search_url_builds_an_async_select() -> None:
 
 
 def test_link_config_without_a_search_url_keeps_the_updates_form_search() -> None:
-    """The endpoint is only mounted if the admin set `ROOT_URLCONF`. Without it the form must
-    still work — the old `query` + `updatesForm` behaviour, not a dead select."""
+    """The endpoint is only mounted if the admin set `ROOT_URLCONF`; without it the form must fall
+    back to `query` + `updatesForm`, not render a dead select."""
     by_name = _by_name(build_link_config(FakeClient(), {"query": "login"}))
 
     assert "url" not in by_name["externalIssue"]
@@ -912,8 +865,8 @@ def test_extract_space_id() -> None:
 
 
 def test_extract_space_id_when_the_value_arrives_as_a_list() -> None:
-    """Jaga wraps the values of multi-valued attributes in a list, and the space attribute is
-    not guaranteed to be scalar. A list must not turn into `int(['11361'])`."""
+    """Jaga wraps multi-valued attributes in a list, and a list must not turn into
+    `int(['11361'])`."""
     assert extract_space_id(raw_task(space_id=[SPACE_ID])) == SPACE_ID
 
 
@@ -935,8 +888,8 @@ def test_extract_space_id_of_an_unusable_value_is_none(value: Any) -> None:
 
 
 def test_reachable_status_ids_deduplicates_and_keeps_the_order() -> None:
-    """A live instance repeats ids in `statusTransitions`. The order is the workflow's own, and
-    it is the order targets are preferred in, so it has to survive deduplication."""
+    """A live instance repeats ids in `statusTransitions`, and their order is the one targets are
+    preferred in — so it has to survive deduplication."""
     task = raw_task(transitions=[107390, 107389, 107390, 107389, 107391])
     assert reachable_status_ids(task) == [107390, 107389, 107391]
 
@@ -946,9 +899,8 @@ def test_reachable_status_ids_when_there_are_none() -> None:
 
 
 def test_reachable_status_ids_skips_junk_instead_of_raising() -> None:
-    """A value that is not an id cannot name a status anyway, so it is dropped. It must not
-    raise: `sync_status_outbound` only catches `JagaError`, so a ValueError escaping here would
-    take the Sentry-side resolve down with it — the one thing the sync must never do."""
+    """`sync_status_outbound` only catches `JagaError`, so a ValueError escaping here would take
+    the Sentry-side resolve down with it."""
     task = raw_task(transitions=[None, "oops", DONE_STATUS.id])
 
     assert reachable_status_ids(task) == [DONE_STATUS.id]
@@ -963,9 +915,8 @@ def test_resolve_target_status_picks_the_status_of_the_wanted_category() -> None
 
 
 def test_resolve_target_status_ignores_a_status_the_task_cannot_reach() -> None:
-    """THE central guarantee. "Готово" exists in the space and is in the wanted category — but
-    the workflow does not allow the task to go there from where it stands. Moving it anyway
-    would be a 4xx from Jaga; the sync must decline and let the caller comment."""
+    """The done status is in the wanted category, but the workflow does not allow the task there
+    from where it stands: moving it anyway is a 4xx from Jaga."""
     task = raw_task(transitions=[IN_PROGRESS_STATUS.id])  # "Готово" is NOT reachable
 
     assert resolve_target_status(FakeClient(), task, SPACE_ID, CATEGORY_DONE) is None
@@ -1035,8 +986,8 @@ def test_apply_status_sync_comments_on_top_of_the_move_when_asked() -> None:
 def test_apply_status_sync_never_moves_to_an_unreachable_status(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """The workflow offers no way into "done" from here. The task must stay where it is —
-    a comment is the fallback, even with `post_comment=False`."""
+    """The workflow offers no way into "done" from here, so the task stays put and the comment is
+    the fallback — even with `post_comment=False`."""
     client = FakeClient(task=raw_task(transitions=[IN_PROGRESS_STATUS.id]))
 
     with caplog.at_level(logging.WARNING, logger="sentry_jaga.issue_config"):
@@ -1053,7 +1004,7 @@ def test_apply_status_sync_never_moves_to_an_unreachable_status(
 
 
 def test_apply_status_sync_deduplicates_the_transitions_it_was_given() -> None:
-    """Duplicates in `statusTransitions` are real. They must not turn into two moves."""
+    """Duplicates in `statusTransitions` are real, and must not turn into two moves."""
     client = FakeClient(
         task=raw_task(transitions=[DONE_STATUS.id, DONE_STATUS.id, IN_PROGRESS_STATUS.id])
     )
@@ -1066,8 +1017,8 @@ def test_apply_status_sync_deduplicates_the_transitions_it_was_given() -> None:
 def test_apply_status_sync_comments_when_the_task_has_no_space(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Without a space there is nothing to resolve status ids against. Still comment, and say
-    so in the log — silence would read as a sync that simply does not work."""
+    """Without a space there is nothing to resolve status ids against, so comment anyway and log
+    it — silence would read as a sync that simply does not work."""
     client = FakeClient(task=raw_task(with_space=False))
 
     with caplog.at_level(logging.WARNING, logger="sentry_jaga.issue_config"):
@@ -1080,8 +1031,8 @@ def test_apply_status_sync_comments_when_the_task_has_no_space(
 
 
 def test_apply_status_sync_honours_a_category_the_admin_chose() -> None:
-    """The categories are settings, not constants: an org that moves resolved issues to
-    "In progress" for a human to close by hand must get exactly that."""
+    """The categories are settings, not constants: an org that moves resolved issues to "In
+    progress" for a human to close by hand must get exactly that."""
     client = FakeClient()
 
     _sync(client, resolved_category=CATEGORY_IN_PROGRESS, post_comment=False)
@@ -1091,10 +1042,8 @@ def test_apply_status_sync_honours_a_category_the_admin_chose() -> None:
 
 # --- remembering the last space and task type (`defaults`) ---------------------------------
 #
-# Sentry stores the last used values itself; reading them back is ours to do. The point of these
-# tests is that a remembered value is a *starting* point and never an authority: it goes through
-# the same `_selected_id` validation as anything else, because between the last create and this
-# render the space may have been archived or the service account may have lost access to it.
+# A remembered value is a *starting* point, never an authority: between the last create and this
+# render the space may have been archived, or the service account may have lost access to it.
 
 
 def _two_spaces() -> FakeClient:
@@ -1108,8 +1057,7 @@ def _two_spaces() -> FakeClient:
 
 
 def test_create_config_starts_from_the_remembered_space_and_type() -> None:
-    """The feature: a team that always files into Billing/Incident should not have to say so
-    twice. With no params (a freshly opened form), the remembered pair is what renders."""
+    """With no params (a freshly opened form), the remembered pair is what renders."""
     fields = build_create_config(
         _two_spaces(), {}, "t", "d", defaults={"project": "2", "issue_type": "21"}
     )
@@ -1120,8 +1068,8 @@ def test_create_config_starts_from_the_remembered_space_and_type() -> None:
 
 
 def test_the_live_form_beats_the_remembered_choice() -> None:
-    """The user is switching the space right now. Whatever they filed into last week is history —
-    otherwise the select would snap back under their fingers."""
+    """The user is switching the space right now: a remembered choice that won would snap the
+    select back under their fingers."""
     fields = build_create_config(
         _two_spaces(), {"project": "1"}, "t", "d", defaults={"project": "2", "issue_type": "21"}
     )
@@ -1133,8 +1081,8 @@ def test_the_live_form_beats_the_remembered_choice() -> None:
 
 
 def test_a_blank_param_does_not_wipe_the_remembered_choice() -> None:
-    """An unset select serialises to "", and "" is not a choice — it is the absence of one.
-    Letting it through would put the form back on the first space and undo the whole feature."""
+    """An unset select serialises to "", which is the absence of a choice, not a choice: letting it
+    through would put the form back on the first space and undo the whole feature."""
     fields = build_create_config(
         _two_spaces(),
         {"project": "", "issue_type": ""},
@@ -1149,9 +1097,8 @@ def test_a_blank_param_does_not_wipe_the_remembered_choice() -> None:
 
 
 def test_a_remembered_space_that_is_gone_falls_back_instead_of_breaking() -> None:
-    """The case the persistence makes newly possible: the space was remembered months ago and the
-    service account has since lost access to it, so Jaga no longer lists it. The form must open on
-    a space that exists — not raise, and above all not render a space the user cannot submit to."""
+    """The service account has lost access to the remembered space, so Jaga no longer lists it: the
+    form must open on a space that exists rather than raise or offer one nobody can submit to."""
     client = _two_spaces()
 
     fields = build_create_config(
@@ -1166,9 +1113,8 @@ def test_a_remembered_space_that_is_gone_falls_back_instead_of_breaking() -> Non
 
 
 def test_persisted_field_names_are_the_names_the_form_actually_emits() -> None:
-    """`PERSISTED_FIELDS` is the contract with Sentry: it filters the submitted form data by
-    these names. A field renamed in `build_create_config` without renaming it here would store
-    nothing, and the form would silently stop remembering anything."""
+    """Sentry filters the submitted form by `PERSISTED_FIELDS`, so a field renamed in
+    `build_create_config` alone would silently stop the form remembering anything."""
     names = {field["name"] for field in build_create_config(FakeClient(), {}, "t", "d")}
 
     assert set(PERSISTED_FIELDS) <= names
@@ -1190,8 +1136,8 @@ def test_link_config_prefills_a_comment_pointing_back_at_sentry() -> None:
 
 
 def test_link_config_prefills_the_comment_on_the_fallback_search_too() -> None:
-    """The link form has two shapes depending on whether the search endpoint is installed. The
-    comment must be offered in both — it is not a property of the search."""
+    """The comment is offered in both shapes of the link form: it is not a property of the
+    search."""
     fields = build_link_config(FakeClient(), {}, sentry_url="https://sentry.io/issues/1/")
     by_name = _by_name(fields)
 
@@ -1199,8 +1145,8 @@ def test_link_config_prefills_the_comment_on_the_fallback_search_too() -> None:
 
 
 def test_link_config_offers_no_comment_without_a_sentry_url() -> None:
-    """No URL, no comment: a field pre-filled with "Linked to Sentry issue None" is worse than
-    no field at all."""
+    """No URL, no comment: a field pre-filled with "Linked to Sentry issue None" is worse than no
+    field at all."""
     assert "comment" not in _by_name(build_link_config(FakeClient(), {}))
 
 
@@ -1208,8 +1154,8 @@ def test_link_config_offers_no_comment_without_a_sentry_url() -> None:
 
 
 def test_post_task_comment_resolves_the_code_and_hands_back_the_created_comment() -> None:
-    """Sentry knows a task only by its code; the comment API wants the numeric id. And the
-    created comment must come back: Sentry stores its id on the note to be able to edit it."""
+    """Sentry knows a task only by its code and the comment API wants the numeric id; the created
+    comment must come back, because Sentry stores its id on the note to be able to edit it."""
     client = FakeClient()
 
     comment = post_task_comment(client, "PLT-500", "Ivan wrote:\n\n> hello")
@@ -1220,8 +1166,8 @@ def test_post_task_comment_resolves_the_code_and_hands_back_the_created_comment(
 
 
 def test_post_task_comment_skips_the_lookup_when_the_id_is_already_known() -> None:
-    """The link path has just fetched the task and holds its id in `ExternalIssue.metadata`.
-    Fetching it again in the same request would be a second round trip for nothing."""
+    """The link path already holds the task id in `ExternalIssue.metadata`, so fetching the task
+    again in the same request is a round trip for nothing."""
     client = FakeClient()
 
     post_task_comment(client, "PLT-500", "linked", task_id=TASK_ID)
@@ -1245,7 +1191,7 @@ def test_edit_task_comment_rewrites_the_comment_it_is_given() -> None:
 
 def test_apply_assignee_sync_writes_the_uuid_of_the_first_email_jaga_knows() -> None:
     """Sentry allows a user several addresses and cannot know which one Jaga has them under, so
-    every one is tried in turn. The `fieldId` comes off the task's own cell — no extra call."""
+    each is tried in turn; the `fieldId` comes off the task's own cell, at no extra call."""
     client = FakeClient()
 
     result = apply_assignee_sync(
@@ -1281,8 +1227,8 @@ def test_apply_assignee_sync_clears_the_field_when_unassigning() -> None:
 
 
 def test_apply_assignee_sync_leaves_the_task_alone_for_a_user_jaga_never_heard_of() -> None:
-    """Someone who works in Sentry but not in Jaga is the normal case, not an error. Clearing the
-    assignee would be worse than doing nothing: it would take a real person off a real task."""
+    """Someone who works in Sentry but not in Jaga is the normal case, not an error: clearing the
+    assignee would take a real person off a real task."""
     client = FakeClient()
 
     result = apply_assignee_sync(client, "PLT-500", ["ghost@example.com"], assign=True)
@@ -1304,16 +1250,14 @@ def test_apply_assignee_sync_is_a_no_op_when_the_type_has_no_assignee_attribute(
 
 def test_assignee_field_id_is_read_off_the_task_itself() -> None:
     """A task's cells carry their own `fieldId`, which is what spares the sync a round trip to the
-    task type. Verified against a live instance (fieldId=867868 there)."""
+    task type."""
     assert assignee_field_id(raw_task()) == 103
     assert assignee_field_id(raw_task(with_assignee=False)) is None
 
 
 def test_a_blank_assignee_value_removes_the_cell_instead_of_sending_it_empty() -> None:
-    """An empty list is NOT "no opinion" to Jaga — it is the instruction to CLEAR the assignee
-    (that is exactly how `apply_assignee_sync` unassigns). Sending it on a create would be
-    harmless today and a bug the moment this payload is reused; and `""` with
-    `referenceValue: true` is not a reference at all. The honest payload has no cell."""
+    """An empty list is not "no opinion" to Jaga but the instruction to CLEAR the assignee — which
+    is exactly how `apply_assignee_sync` unassigns — so the honest payload carries no cell."""
     client = FakeClient()
     create_task_from_form(
         client,

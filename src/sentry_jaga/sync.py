@@ -22,17 +22,10 @@ from sentry_jaga.issues import JagaIssuesMixin, as_integration_error
 
 logger = logging.getLogger("sentry_jaga.sync")
 
-# Hardcoded on purpose — these are NOT fetched from Jaga.
-#
-# The settings page must render whether or not Jaga is reachable: an organization whose Jaga
-# is down (or whose service-account password has just expired) still has to be able to open
-# its integration settings — if only to turn the sync off. Sourcing the choices over HTTP
-# would make this page fail exactly when it is needed most.
-#
-# Hardcoding costs nothing here, because the values are not per-instance data: they are the
-# three categories Jaga groups every one of its statuses under, the same on every deployment.
-# The concrete status ids behind them ARE per-space, and those are resolved at sync time
-# against the task's own workflow (`issue_config.resolve_target_status`).
+# Hardcoded on purpose, NOT fetched from Jaga: the settings page must render even when Jaga is
+# down or the service-account password has expired — if only so the sync can be turned off. The
+# three categories are the same on every deployment; the concrete status ids behind them are
+# per-space and are resolved at sync time (`issue_config.resolve_target_status`).
 CATEGORY_CHOICES = [
     (issue_config.CATEGORY_DONE, "Done"),
     (issue_config.CATEGORY_IN_PROGRESS, "In progress"),
@@ -44,34 +37,23 @@ class JagaSyncMixin(JagaIssuesMixin, IssueSyncIntegration):
     """Moves (and comments on) the Jaga task whenever the Sentry issue changes."""
 
     outbound_status_key = "sync_status_forward"
-    # Sentry's own name for this one: `should_comment_sync` (sentry/integrations/tasks) gates the
-    # `create_comment` / `update_comment` background tasks on `should_sync("comment")`, which
-    # reads the config under the key named here.
+    # Sentry's own name for this one: `should_comment_sync` gates the `create_comment` /
+    # `update_comment` background tasks on `should_sync("comment")`, which reads this key.
     comment_key = "sync_comments"
     outbound_assignee_key = "sync_assignee_forward"
     # Inbound sync (Jaga -> Sentry webhooks) is not supported in this version.
     inbound_status_key = None
     inbound_assignee_key = None
 
-    # What each sync does before the organization has ever opened its settings — the moment
-    # `org_integration.config` is still {}. The base `should_sync` hardcodes False there; we
-    # override it because the status sync has to be on out of the box, and because every default
-    # below must agree with the one rendered by `get_organization_config` (a checkbox that reads
-    # "off" while the sync is in fact running is a lie, and the first Save would then quietly
-    # turn it off for real).
+    # What each sync does before the organization has ever opened its settings, i.e. while
+    # `org_integration.config` is still {} (the base `should_sync` hardcodes False there). Every
+    # default here must agree with the one rendered by `get_organization_config`: a checkbox that
+    # reads "off" while the sync runs is a lie, and the first Save would turn it off for real.
     #
-    # Status sync defaults ON: moving a task is the whole point of installing this, and it says
-    # nothing an incident responder would not want said.
-    #
-    # Comment sync defaults OFF, like every issue integration upstream. A Sentry note is internal
-    # discussion — it can name a customer, a credential, a suspect commit — and forwarding it to
-    # a tracker with a different audience is a decision for an admin to take on purpose, not a
-    # surprise to discover afterwards.
-    #
-    # Assignee sync defaults OFF for a plainer reason: it puts a named human on a ticket in
-    # another system, which notifies them and makes them accountable for it. Sentry's idea of who
-    # owns an issue is not automatically the right answer inside Jaga, where the space may have a
-    # duty roster of its own. Whoever wants the two to agree can say so.
+    # Status sync is ON — moving a task is the point of installing this. Comment and assignee sync
+    # are OFF, like every issue integration upstream: a Sentry note is internal discussion, and an
+    # assignment names a real person in another system and notifies them. Both are decisions for an
+    # admin to take on purpose.
     SYNC_DEFAULTS: ClassVar[dict[str, bool]] = {
         "outbound_status": True,
         "comment": False,
@@ -86,10 +68,8 @@ class JagaSyncMixin(JagaIssuesMixin, IssueSyncIntegration):
         return bool(config.get(key, self.SYNC_DEFAULTS[attribute]))
 
     def get_organization_config(self) -> Sequence[Any]:
-        # Every `default` here is mandatory, and each one must match what `sync_status_outbound`
-        # falls back to below. Before the first save, `get_config_data()` returns {}: without a
-        # default the checkbox would render as off while the sync is in fact on (see
-        # `should_sync`), and the very first "Save" would send false and silently kill it.
+        # Every `default` here is mandatory and must match what `sync_status_outbound` falls back
+        # to below: before the first save `get_config_data()` returns {}. See `SYNC_DEFAULTS`.
         return [
             {
                 "name": "sync_status_forward",
@@ -189,8 +169,7 @@ class JagaSyncMixin(JagaIssuesMixin, IssueSyncIntegration):
                 external_issue.key,
                 is_resolved=is_resolved,
                 # The fallbacks repeat the field defaults above, and must keep doing so: an
-                # organization that installed the integration and never opened its settings has
-                # an empty `config`, and the sync still has to know where to move a task.
+                # organization that never opened its settings has an empty `config`.
                 resolved_category=str(
                     config.get("resolved_status_category") or issue_config.CATEGORY_DONE
                 ),
@@ -212,23 +191,19 @@ class JagaSyncMixin(JagaIssuesMixin, IssueSyncIntegration):
 
     # --- Sentry notes -> Jaga comments ---------------------------------------------------
     #
-    # Driven by Sentry's `create_comment` / `update_comment` background tasks
-    # (sentry/integrations/tasks/), which the group-notes endpoint queues for every external
-    # issue linked to the group. Both are gated on `should_sync("comment")` above.
+    # Driven by Sentry's `create_comment` / `update_comment` background tasks, gated on
+    # `should_sync("comment")` above. `issue_id` is NOT a database id: the tasks pass
+    # `external_issue.key`, i.e. the Jaga task code (`issue_config._task_id_for` turns it into the
+    # numeric id the comment API wants).
     #
-    # `issue_id` is NOT a database id: the tasks pass `external_issue.key`, i.e. the Jaga task
-    # code. `_task_id_for` in the core turns it into the numeric id the comment API wants.
-    #
-    # Failures are deliberately NOT swallowed here (unlike `sync_status_outbound`): these run in
-    # a background task that Sentry retries five times. Swallowing would throw away the retry and
-    # lose the note for good.
+    # Failures are deliberately NOT swallowed here (unlike `sync_status_outbound`): these run in a
+    # background task Sentry retries five times, and swallowing would throw the retry away.
 
     def _author_name(self, user_id: int) -> str:
         """The display name of the Sentry user who wrote the note.
 
-        This is the one thing the Sentry layer contributes to the comment: the text itself is
-        built in the core (`build_note_comment`). A note can outlive its author's account, so a
-        missing user is a normal outcome, not an error — Jira Server asserts here and would 500.
+        A note can outlive its author's account, so a missing user is a normal outcome, not an
+        error — Jira Server asserts here and would 500.
         """
         user = user_service.get_user(user_id=user_id)
         if user is None:
@@ -239,8 +214,8 @@ class JagaSyncMixin(JagaIssuesMixin, IssueSyncIntegration):
         """Post a Sentry note on the linked Jaga task, and return the comment Jaga created.
 
         Returning it is load-bearing: `sentry.integrations.tasks.create_comment` feeds the return
-        value to `get_comment_id()` and stores the result in `note.data["external_id"]`. Return
-        None and an edit of the note later has no comment to point at.
+        value to `get_comment_id()` and stores it in `note.data["external_id"]`. Return None and a
+        later edit of the note has no comment to point at.
         """
         content = build_note_comment(self._author_name(user_id), group_note.data["text"])
         with as_integration_error():
@@ -261,18 +236,13 @@ class JagaSyncMixin(JagaIssuesMixin, IssueSyncIntegration):
     def _addresses_of(user: RpcUser) -> list[str]:
         """Every address this Sentry user might be known by in Jaga, best first.
 
-        `RpcUser.emails` is NOT "the user's email addresses" — it is the *verified* ones only
-        (`sentry/users/services/user/serial.py`: `[e for e in useremails if e["is_verified"]]`),
-        and `UserEmail.is_verified` defaults to False. On a self-hosted Sentry with no working
-        SMTP, nobody ever confirms an address, so that set is empty for EVERY user. Relying on it
-        alone would mean the assignee sync never matched anyone on exactly the deployments this
-        integration is built for. So the primary address (`user.email`) leads, and the verified
-        ones follow.
+        `RpcUser.emails` holds only the *VERIFIED* addresses, and `UserEmail.is_verified` defaults
+        to False — so on a self-hosted Sentry with no working SMTP it is empty for EVERY user.
+        Hence the primary address (`user.email`) leads and the verified ones follow, and hence "no
+        addresses" must NEVER be read as "unassign" (see `sync_assignee_outbound`).
 
-        `emails` is a frozenset, and iterating one is ordered by string hash — which Python
-        randomises per process. Left unsorted, a user with two addresses that resolve to two
-        different Jaga profiles would land on a different executor depending on which worker ran
-        the task. Sorting makes the choice boring and repeatable.
+        `emails` is a frozenset, and iterating one is ordered by a string hash Python randomises
+        per process. Sorting keeps the address chosen repeatable across workers.
         """
         addresses = [user.email] if user.email else []
         addresses += sorted(user.emails)
@@ -287,22 +257,18 @@ class JagaSyncMixin(JagaIssuesMixin, IssueSyncIntegration):
     ) -> None:
         """Put the Sentry issue's assignee on the Jaga task, or take them off it.
 
-        `user is None` means unassign — that is Sentry's own reading of it, in as many words:
-        `sentry/integrations/tasks/sync_assignee_outbound.py` resolves the user with
-        `user_service.get_user(user_id) if user_id else None` under the comment "Assume unassign
-        if None". (Assigning a Sentry issue to a *team* does not reach here at all: the outbound
-        sync is only queued when `assignee_type == "user"` — `models/groupassignee.py`.)
+        `user is None` means unassign — Sentry's own comment for it is "Assume unassign if None"
+        (`sentry/integrations/tasks/sync_assignee_outbound.py`). An issue assigned to a *team* never
+        reaches here at all: the outbound sync is only queued when `assignee_type == "user"`
+        (`models/groupassignee.py`). Matching is by email; see `_addresses_of`.
 
-        Matching is by email; see `_addresses_of` for which addresses, and in what order.
+        A Sentry user with no Jaga counterpart raises `IntegrationSyncTargetNotFound`, which
+        Sentry's task records as a halt. It must NOT fall through to the unassign branch: that would
+        take a real person off a real task because a lookup missed.
 
-        A user Jaga has never heard of raises `IntegrationSyncTargetNotFound`, which Sentry's task
-        catches and records as a halt. It must NOT fall through to the unassign branch: that would
-        take a real person off a real task because Sentry could not find their counterpart — the
-        loudest possible way to lose data over a lookup miss.
-
-        Jaga being down propagates as an `IntegrationError`. Unlike `sync_status_outbound`, this
-        is NOT swallowed: the task retries five times, and swallowing would throw the retry away
-        AND record the assignment as a success that never happened.
+        Jaga being down propagates as an `IntegrationError` — NOT swallowed, unlike
+        `sync_status_outbound`: the task retries five times, and swallowing would throw the retry
+        away and record an assignment that never happened.
         """
         if user is not None and assign:
             addresses = self._addresses_of(user)

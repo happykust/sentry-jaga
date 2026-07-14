@@ -13,10 +13,7 @@ def test_package_exposes_version() -> None:
 
 
 def test_version_has_single_source_of_truth() -> None:
-    """The distribution metadata must agree with `[project] version` in pyproject.
-
-    This holds the invariant "the version is declared in exactly one place": a hardcoded
-    value in `__init__.py` or in the metadata that drifted from pyproject surfaces here.
-    """
+    """The version is declared in exactly one place: a hardcoded value in `__init__.py`, or
+    metadata that drifted from pyproject, surfaces here."""
     declared = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))["project"]["version"]
     assert sentry_jaga.__version__ == declared

@@ -2,8 +2,8 @@ import pytest
 import responses
 from django.core.exceptions import ValidationError
 
-# The requests ConnectionError, not the builtin one: the network must fail the way
-# requests sees it (RequestException) — that is exactly what verify_credentials catches.
+# The requests ConnectionError, not the builtin one: `verify_credentials` catches
+# RequestException, so the network has to fail the way requests sees it.
 from requests.exceptions import ConnectionError
 
 from sentry_jaga.pipeline import InstallationForm, verify_credentials
@@ -22,11 +22,8 @@ LOGIN_OK = {
 
 
 def test_form_fields_are_documented_for_the_installer() -> None:
-    """Every field carries a label and help text — the setup form renders them via crispy.
-
-    The template (`sentry_jaga/config.html`) shows nothing but the fields themselves, so an
-    undocumented field leaves the admin guessing what to type into it.
-    """
+    """The setup template shows nothing but the fields themselves, so a field without a label and
+    help text leaves the admin guessing what to type into it."""
     form = InstallationForm()
 
     assert list(form.fields) == ["instance_url", "email", "password"]
@@ -81,12 +78,9 @@ def test_form_valid_when_jaga_accepts_credentials() -> None:
 
 @responses.activate
 def test_form_assumes_https_for_schemeless_url() -> None:
-    """A schemeless address is completed to HTTPS, not to HTTP.
-
-    On Django 5.x (which is what Sentry 26.3.1 ships), a `URLField` without `assume_scheme`
-    substitutes `http://`. The service account password would then go out for verification
-    in plain text, and the http address would settle into `Integration.metadata` forever.
-    """
+    """A Django 5.x `URLField` without `assume_scheme` completes a schemeless address to `http://`,
+    which would send the service-account password out in plain text and settle into
+    `Integration.metadata` for good."""
     responses.add(responses.POST, f"{API}/v1/auth/login", json=LOGIN_OK, status=200)
     form = InstallationForm(
         {"instance_url": "jaga.example.com", "email": "bot@example.com", "password": "secret"}
@@ -112,8 +106,7 @@ def test_form_surfaces_rejection_by_jaga_as_form_error() -> None:
 
 @responses.activate
 def test_form_does_not_call_jaga_when_a_field_is_missing() -> None:
-    """Without a password there is nothing to check — do not call Jaga (that login is
-    known-broken up front)."""
+    """Without a password there is nothing to check, and the login is known-broken up front."""
     form = InstallationForm({"instance_url": BASE, "email": "bot@example.com"})
 
     assert not form.is_valid()

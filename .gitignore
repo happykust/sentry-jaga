@@ -90,27 +90,22 @@ fabric.properties
 # ...but not our own scripts/ directory (the pattern above targets Windows venvs).
 !/scripts/
 
-# Planning artefacts, not documentation. They are written in the course of building a thing, they
-# describe what was *intended* rather than what was built, and they go stale the moment the code
-# disagrees with them — which it did, six times over. The repository documents the code that
-# exists; git history keeps the rest.
+# Planning artefacts, not documentation: they describe what was intended, not what was built.
 /docs/superpowers/
 
 # The release runbook is the maintainer's own note, not part of the published project.
 /docs/release.md
 
-# Editor and rebase leftovers. These matter more than they look: `[tool.hatch.build.targets.wheel]`
-# ships everything under `src/sentry_jaga`, so a `.bak` sitting next to a module gets published to
-# PyPI inside the wheel. It has happened here already.
+# Editor and rebase leftovers. The wheel target ships everything under `src/sentry_jaga`, so a
+# `.bak` next to a module would be published to PyPI inside it.
 *.bak
 *.mbak
 *.orig
 *.rej
 
-# The probes are throwaway tools that talk to a real Jaga instance with real credentials, and
-# they are written against whatever question was open at the time. What they found is not kept
-# here but in the code they justify — see the docstrings of `JagaClient.transition_task`,
-# `attach_file`, `get_or_create_label` and `fields.injected_attributes`. Keep yours locally.
+# Throwaway probe scripts: they talk to a real Jaga instance with real credentials. What they found
+# lives in the docstrings of the code they justify (`JagaClient.transition_task`, `attach_file`,
+# `get_or_create_label`, `fields.injected_attributes`). Keep yours locally.
 /scripts/probe_*.py
 pyvenv.cfg
 .venv

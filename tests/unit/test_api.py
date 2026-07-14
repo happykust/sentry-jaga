@@ -103,8 +103,7 @@ def test_get_projects_unwraps_page(client: JagaClient) -> None:
 
 @responses.activate
 def test_get_projects_reads_every_page(client: JagaClient) -> None:
-    """More spaces than fit on one page — read up to `totalPages` instead of stopping at the
-    first one."""
+    """More spaces than fit on one page: read up to `totalPages`, not just the first."""
     _mock_login()
     responses.add(
         responses.GET,
@@ -141,7 +140,7 @@ def test_get_projects_reads_every_page(client: JagaClient) -> None:
 
 @responses.activate
 def test_get_projects_is_cached(client: JagaClient) -> None:
-    """A repeat call takes the list from the cache: the link form pulls it on every key."""
+    """The link form pulls the list on every keystroke, so a repeat call must not re-fetch."""
     _mock_login()
     responses.add(
         responses.GET,
@@ -165,8 +164,7 @@ def test_get_projects_is_cached(client: JagaClient) -> None:
 
 @responses.activate
 def test_projects_cache_is_shared_between_clients() -> None:
-    """The cache is injected from outside (the Django cache in production), so it outlives a
-    single HTTP request."""
+    """The cache is injected from outside (Django's in production), so it outlives one request."""
     cache = InMemoryCache()
     _mock_login()
     responses.add(
@@ -286,12 +284,8 @@ def _matrix_page(users: list[dict[str, Any]], total_pages: int = 1) -> dict[str,
 
 @responses.activate
 def test_get_space_users_reads_the_role_matrix_and_returns_emails(client: JagaClient) -> None:
-    """The select's value is the EMAIL, not the person UUID the attribute finally stores.
-
-    The matrix is the only member list that works on a live instance, and it carries no UUID —
-    those cost one call each, which the form cannot afford for every member. So the email travels
-    and the UUID is resolved for whoever is picked. See `resolve_assignee_cells`.
-    """
+    """The select's value is the EMAIL, not the UUID the attribute stores: the matrix carries no
+    UUID and one costs an HTTP call per person, so it is resolved only for whoever is picked."""
     _mock_login()
     responses.add(
         responses.GET,
@@ -299,7 +293,7 @@ def test_get_space_users_reads_the_role_matrix_and_returns_emails(client: JagaCl
         json=_matrix_page(
             [
                 {
-                    "id": 365474,  # the TEAM id — not the Core id, and nothing reads it
+                    "id": 365474,  # the TEAM id, not the Core id
                     "displayName": "Ivanov Ivan",
                     "email": "ivanov@example.com",
                     "isGroup": False,
@@ -354,8 +348,8 @@ def test_get_space_users_drops_groups_and_the_email_less(client: JagaClient) -> 
 
 @responses.activate
 def test_get_space_users_dedupes_a_member_who_holds_two_roles(client: JagaClient) -> None:
-    """The matrix is a page of ROLES, each with its holders — so one person appears once per role
-    they have. Listing them twice would put them twice in the dropdown."""
+    """The matrix is a page of ROLES with their holders, so a person with two roles appears twice
+    — and would land in the dropdown twice."""
     _mock_login()
     person = {
         "id": 1,
@@ -426,9 +420,8 @@ def test_get_space_users_reads_every_page(client: JagaClient) -> None:
 def test_get_space_users_falls_back_to_the_documented_endpoint_when_the_matrix_errors(
     client: JagaClient,
 ) -> None:
-    """`applicationMnemo` is a guess ("JAGA" is what the live instance takes, and the spec names
-    no value at all). An instance that calls its application something else answers 404 — and the
-    documented endpoint, dead as it is here, is then the only thing left to try."""
+    """`applicationMnemo` is a guess ("JAGA"), so an instance that names its application otherwise
+    answers 404 — and the documented endpoint is then the only thing left to try."""
     _mock_login()
     responses.add(responses.GET, _matrix_url(1), json={"error": "nope"}, status=404)
     responses.add(
@@ -460,9 +453,8 @@ def test_get_space_users_falls_back_to_the_documented_endpoint_when_the_matrix_e
 
 @responses.activate
 def test_get_space_users_takes_an_empty_matrix_at_face_value(client: JagaClient) -> None:
-    """A space really can have nobody in it. Falling back on an EMPTY (as opposed to failing)
-    matrix would re-introduce the very bug this replaced: `getUserProfileDtos` answers 200 with
-    [] for every space on the live instance, so a second empty answer would hide the first."""
+    """An EMPTY matrix is taken at face value: the dead `getUserProfileDtos` also answers `200 []`,
+    so falling back to it would only hide the first empty answer behind a second one."""
     _mock_login()
     responses.add(responses.GET, _matrix_url(1), json=_matrix_page([]), status=200)
 
@@ -504,8 +496,8 @@ def test_find_person_by_email_returns_all_three_identifiers(client: JagaClient) 
 
 @responses.activate
 def test_find_person_by_email_treats_400_as_not_found(client: JagaClient) -> None:
-    """Jaga answers an unknown email with 400 and `NotFoundException` — a 400 that means "no such
-    user". A Sentry user is under no obligation to exist in Jaga, so this is not an error."""
+    """Jaga answers an unknown email with a 400 that says `NotFoundException`, and a Sentry user is
+    under no obligation to exist in Jaga — so that is a miss, not an error."""
     _mock_login()
     responses.add(
         responses.POST,
@@ -533,11 +525,8 @@ def test_find_person_by_email_still_raises_on_a_real_failure(client: JagaClient)
 def test_find_person_by_email_raises_on_a_400_that_does_not_say_not_found(
     client: JagaClient,
 ) -> None:
-    """THE important one. Jaga says "no such user" with a 400, so it is tempting to read every 400
-    as "nobody" — and that would swallow our OWN bugs: a renamed field, a moved route, a WAF in
-    front of the API. Each would come back as a confident, hour-long cached "that person does not
-    exist" about somebody who is standing right there in the dropdown. An unexplained 400 must be
-    heard."""
+    """An unexplained 400 (a renamed field, a moved route, a WAF) must propagate: read as "no such
+    user", it would be cached as a confident lie about somebody standing in the dropdown."""
     _mock_login()
     responses.add(
         responses.POST,
@@ -552,9 +541,8 @@ def test_find_person_by_email_raises_on_a_400_that_does_not_say_not_found(
 
 @responses.activate
 def test_find_person_by_email_refuses_a_person_it_did_not_ask_for(client: JagaClient) -> None:
-    """The endpoint is find-by-mail-OR-NAME, and nothing in its contract promises an exact match.
-    A fuzzy hit would hand back a different human — whom we would then put on a real task, with
-    total confidence and no way to notice."""
+    """`findByMailOrName` is a fuzzy by-mail-OR-name search: a profile whose email is not the one
+    asked for is a different human, and would go onto a real task."""
     _mock_login()
     responses.add(
         responses.POST,
@@ -593,11 +581,8 @@ def test_find_person_by_email_caches_the_answer(client: JagaClient) -> None:
 
 @responses.activate
 def test_find_person_by_email_caches_a_miss_too(client: JagaClient) -> None:
-    """A Sentry user with no Jaga account must not cost a round trip on every single assignment.
-
-    Only a miss Jaga *explained* is cached — hence the real not-found body here rather than a bare
-    400. An unexplained 400 raises and is cached as nothing; see the test above.
-    """
+    """A Sentry user with no Jaga account must not cost a round trip on every assignment — but only
+    a miss Jaga *explained* is cached, hence the real not-found body here (see the test above)."""
     _mock_login()
     responses.add(
         responses.POST,
@@ -615,12 +600,8 @@ def test_find_person_by_email_caches_a_miss_too(client: JagaClient) -> None:
 
 @responses.activate
 def test_find_person_by_email_does_not_call_jaga_for_a_blank_email(client: JagaClient) -> None:
-    """`responses` is active but NOTHING is registered, so any HTTP call at all fails the test.
-
-    The decorator is the whole point: without it `responses` does not patch `requests`, and a
-    regression here would send a real request to the configured instance — which would then fail,
-    or not, depending on DNS. That is not a test.
-    """
+    """`@responses.activate` is load-bearing: nothing is registered, so a regression that made an
+    HTTP call fails here rather than sending a REAL request to the configured instance."""
     assert client.find_person_by_email("   ") is None
     assert len(responses.calls) == 0
 
@@ -630,9 +611,8 @@ def test_find_person_by_email_does_not_call_jaga_for_a_blank_email(client: JagaC
 
 @responses.activate
 def test_set_task_assignees_patches_the_attribute(client: JagaClient) -> None:
-    """The assignee is an EAV attribute, not a task role: `PUT /v1/taskRole/task/{id}/executor` is
-    what the spec offers and it 404s on the live instance (no handler at all). `PATCH /v1/task/
-    {id}` takes the same cell the create builds, and the value travels as a LIST."""
+    """The assignee is an EAV attribute, not a task role (`PUT /v1/taskRole/task/{id}/executor`
+    404s on a live instance): it is PATCHed onto the task, and the value travels as a LIST."""
     _mock_login()
     responses.add(responses.PATCH, f"{API}/v1/task/1703944", json={"id": 1703944}, status=200)
 
@@ -688,8 +668,8 @@ def test_get_labels_returns_ids(client: JagaClient) -> None:
 
 @responses.activate
 def test_get_or_create_label_returns_the_id_of_the_label(client: JagaClient) -> None:
-    """`/v1/labels/list` is a get-or-create, despite the name: it answers with the labels named
-    in the body and creates the ones Jaga does not have yet. Verified against a live instance."""
+    """`/v1/labels/list` is a get-or-create despite the name: it answers with the labels named in
+    the body and creates the ones Jaga does not have yet."""
     _mock_login()
     responses.add(
         responses.POST,
@@ -708,8 +688,8 @@ def test_get_or_create_label_returns_the_id_of_the_label(client: JagaClient) -> 
 
 @responses.activate
 def test_get_or_create_label_without_a_label_in_the_answer_raises(client: JagaClient) -> None:
-    """The endpoint is a get-or-create: an empty `labels` means it neither found nor made the
-    label. There is no id to put on the task, so say so instead of blowing up on an IndexError."""
+    """An empty `labels` means the get-or-create neither found nor made the label: say so instead
+    of blowing up on an IndexError."""
     _mock_login()
     responses.add(responses.POST, f"{API}/v1/labels/list", json={"labels": []}, status=200)
 
@@ -720,8 +700,7 @@ def test_get_or_create_label_without_a_label_in_the_answer_raises(client: JagaCl
 @responses.activate
 def test_attach_file_uploads_multipart_and_binds_the_file_to_the_task(client: JagaClient) -> None:
     """`projectId` is mandatory (Jaga files attachments under a space) and `taskId` is what binds
-    the file to the task — despite the endpoint's "without binding to entity" summary. Verified
-    against a live instance."""
+    the file to the task, despite the endpoint's "without binding to entity" summary."""
     _mock_login()
     responses.add(
         responses.POST,
@@ -752,8 +731,7 @@ def test_attach_file_uploads_multipart_and_binds_the_file_to_the_task(client: Ja
     request = responses.calls[-1].request
     assert "projectId=11361" in request.url
     assert "taskId=1703944" in request.url
-    # `requests` builds the multipart body — and its boundary — from `files=`. A Content-Type of
-    # our own would destroy the boundary, so the header must be the one it generated.
+    # A Content-Type of our own would destroy the boundary `requests` built from `files=`.
     assert request.headers["Content-Type"].startswith("multipart/form-data; boundary=")
     body = bytes(request.body)
     assert b'name="file"; filename="sentry-event.json"' in body
@@ -844,8 +822,7 @@ def test_get_task_by_code_returns_task(client: JagaClient) -> None:
 
 @responses.activate
 def test_search_tasks_globally_searches_every_space(client: JagaClient) -> None:
-    """The answer is shaped exactly as a live instance returns it — which is NOT what the spec
-    says. The spec declares `array<TaskPageApiDto>`; the wire carries a single page object, and
+    """The wire carries a single page object where the spec declares `array<TaskPageApiDto>`, and
     a task's title lives in its EAV `attributes` rather than in a `title` key."""
     _mock_login()
     responses.add(
@@ -856,7 +833,7 @@ def test_search_tasks_globally_searches_every_space(client: JagaClient) -> None:
                 {
                     "id": 5,
                     "code": "PLT-5",
-                    # The live instance returns the space of a found task as null — every time.
+                    # The live instance always returns the space of a found task as null.
                     "projectId": None,
                     "projectCode": None,
                     "projectTitle": None,
@@ -916,15 +893,15 @@ def test_create_comment(client: JagaClient) -> None:
         "contentComment": "Resolved in Sentry",
         "attachIsPending": False,
     }
-    # The created comment has to come back: Sentry reads its id out of the return value and
-    # stores it on the note, and that id is the only way an edit can find the comment again.
+    # The created comment must come back: its id is stored on the note, and is the only way an
+    # edit can find the comment again.
     assert comment == {"id": 1, "taskId": 500}
 
 
 @responses.activate
 def test_create_comment_survives_an_empty_body(client: JagaClient) -> None:
-    """Jaga answers a create with the whole comment — but a 200 with no body must not blow up
-    the caller with `TypeError: dict(None)`. The comment is lost; the sync is not."""
+    """A 200 with no body must not blow the caller up with `TypeError: dict(None)` — the comment
+    is lost, the sync is not."""
     _mock_login()
     responses.add(responses.POST, f"{API}/v1/comment", body="", status=200)
 
@@ -933,9 +910,8 @@ def test_create_comment_survives_an_empty_body(client: JagaClient) -> None:
 
 @responses.activate
 def test_update_comment(client: JagaClient) -> None:
-    """An edited Sentry note must rewrite the comment it created, not append a second one.
-    Jaga's `CommentApiDto` wants `taskId` on the update too — the endpoint takes the same schema
-    both ways — so the task id travels along with the comment id."""
+    """An edited Sentry note must rewrite its comment, not append a second one — and Jaga's
+    `CommentApiDto` wants `taskId` on the update too, so it travels with the comment id."""
     _mock_login()
     responses.add(responses.PUT, f"{API}/v1/comment", json={"id": 77, "taskId": 500}, status=200)
 
@@ -953,9 +929,8 @@ def test_update_comment(client: JagaClient) -> None:
     assert comment == {"id": 77, "taskId": 500}
 
 
-# The three statuses a real space answers `workflowStatusesAvail` with. Names are Jaga's own,
-# kept verbatim (CONTRIBUTING: "text we quote from Jaga"). RUF001 objects to the one-letter
-# Cyrillic preposition below, which it reads as a Latin "B" — but Jaga's name is what it is.
+# The statuses a real space answers `workflowStatusesAvail` with, Jaga's own names kept verbatim.
+# RUF001 reads the one-letter Cyrillic preposition below as a Latin "B".
 IN_PROGRESS_NAME = "В работе"  # noqa: RUF001
 SPACE_STATUSES_PAYLOAD: list[dict[str, Any]] = [
     {"id": 107391, "name": "Сделать", "categoryNameM": "status.category.todo"},
@@ -966,8 +941,8 @@ SPACE_STATUSES_PAYLOAD: list[dict[str, Any]] = [
 
 @responses.activate
 def test_get_space_statuses(client: JagaClient) -> None:
-    """The statuses of ONE space, from `workflowStatusesAvail?projectId=` — the only endpoint
-    that answers with a usable list. `/v1/taskStatusRef` returns all ~90k of them."""
+    """The statuses of ONE space, from `workflowStatusesAvail?projectId=`: `/v1/taskStatusRef`
+    returns all ~90k of them."""
     _mock_login()
     responses.add(
         responses.GET, f"{API}/v1/workflowStatusesAvail", json=SPACE_STATUSES_PAYLOAD, status=200
@@ -986,9 +961,8 @@ def test_get_space_statuses(client: JagaClient) -> None:
 
 @responses.activate
 def test_get_space_statuses_is_cached_per_space(client: JagaClient) -> None:
-    """Every resolve and every regression asks for these. Cache them — but per space: two
-    spaces must not see each other's statuses, or the sync would move a task into a status
-    from another workflow."""
+    """Cached PER SPACE: two spaces sharing one entry would move a task into a status that
+    belongs to another workflow."""
     _mock_login()
     responses.add(
         responses.GET, f"{API}/v1/workflowStatusesAvail", json=SPACE_STATUSES_PAYLOAD, status=200
@@ -1012,8 +986,8 @@ def test_get_space_statuses_is_cached_per_space(client: JagaClient) -> None:
 
 @responses.activate
 def test_transition_task(client: JagaClient) -> None:
-    """`formFields` is declared required by the API and an empty list is accepted — verified
-    against a live instance. Sending it is not optional: leaving the key out is a 4xx."""
+    """`formFields` is declared required and an empty list is accepted: leaving the key out is
+    a 4xx."""
     _mock_login()
     responses.add(responses.POST, f"{API}/v1/task/updateTaskStatusAndFields", json={}, status=202)
 
@@ -1054,12 +1028,8 @@ def test_second_401_in_a_row_raises_instead_of_looping(client: JagaClient) -> No
 
 @responses.activate
 def test_403_does_not_trigger_relogin(client: JagaClient) -> None:
-    """A 403 means "the token is valid, the rights are not": re-logging in would not fix it,
-    only mask it.
-
-    The error must reach the caller on the first attempt, with no second login and no repeat
-    request.
-    """
+    """A 403 means "the token is valid, the rights are not": re-logging in would only mask it, so
+    the error must reach the caller on the first attempt."""
     _mock_login()
     responses.add(
         responses.GET, f"{API}/v1/project/list/my", json={"message": "forbidden"}, status=403
@@ -1106,9 +1076,8 @@ def test_raises_server_error(client: JagaClient) -> None:
 
 
 # --- response body parsing ------------------------------------------------
-# Jaga does not answer with JSON on every endpoint: there can be an empty body (a 204 on a
-# comment) and plain text from a proxy in front of Jaga. We check this on `_send` — it is
-# the only place that returns the parsed body as is; the public methods already interpret it.
+# Not every Jaga answer is JSON: an empty body (a 204) and plain text from a proxy both have to
+# survive. `_send` is the only place that returns the parsed body as is.
 
 
 @responses.activate
@@ -1147,9 +1116,8 @@ def test_send_raises_with_text_body_on_non_json_error(client: JagaClient) -> Non
 def test_get_space_users_stops_and_says_so_when_a_space_has_absurdly_many_members(
     client: JagaClient, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """A space that claims more pages than the cap must not hang the form render for minutes —
-    and must not pretend it listed everyone either. Silent truncation reads as "that is all of
-    them", which is exactly the kind of quiet lie this endpoint replaced."""
+    """A space claiming more pages than the cap must not hang the form render — and must say it
+    truncated rather than pass a partial list off as everybody."""
     _mock_login()
     for page in range(MAX_MEMBER_PAGES):
         responses.add(
@@ -1183,8 +1151,8 @@ def test_get_space_users_stops_and_says_so_when_a_space_has_absurdly_many_member
 def test_find_person_by_email_returns_none_when_jaga_answers_without_a_uuid(
     client: JagaClient,
 ) -> None:
-    """A 200 with no `uuid` in it is not a person we can assign: the UUID is the only thing the
-    attribute takes. Returning a `Person` with an empty uuid would put `""` on a real task."""
+    """A 200 with no `uuid` is not a person we can assign: a `Person` with an empty uuid would put
+    `""` on a real task."""
     _mock_login()
     responses.add(
         responses.POST,
@@ -1198,9 +1166,8 @@ def test_find_person_by_email_returns_none_when_jaga_answers_without_a_uuid(
 
 @responses.activate
 def test_get_space_users_is_cached(client: JagaClient) -> None:
-    """The create form's space and type selects both carry `updatesForm`, so Sentry re-renders the
-    whole form — and re-runs this — every time either is touched. Uncached, each of those renders
-    would walk every page of the member list again."""
+    """The create form's cascade re-renders on every change, so an uncached member list would walk
+    every page of the matrix again on each of them."""
     _mock_login()
     responses.add(
         responses.GET,
@@ -1229,9 +1196,8 @@ def test_get_space_users_is_cached(client: JagaClient) -> None:
 
 @responses.activate
 def test_get_space_users_falls_back_when_the_matrix_is_not_even_a_page(client: JagaClient) -> None:
-    """A 200 whose body is not a page is an answer we cannot read. It must reach the fallback —
-    not escape as an `AttributeError` from `.get` and take the whole create form down with it.
-    This API has already returned shapes its own spec did not promise, five times over."""
+    """A 200 whose body is not a page must reach the fallback, not escape as an `AttributeError`
+    and take the whole create form down with it."""
     _mock_login()
     responses.add(responses.GET, _matrix_url(1), json=["not", "a", "page"], status=200)
     responses.add(

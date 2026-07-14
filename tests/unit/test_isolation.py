@@ -16,7 +16,7 @@ CORE_MODULES = [
 
 
 def test_core_modules_do_not_import_sentry() -> None:
-    """Import the whole core in a clean process: sentry must not be pulled in."""
+    """The whole core imported in a clean process must not pull sentry in."""
     code = (
         "import sys;"
         + "".join(f"import {m};" for m in CORE_MODULES)

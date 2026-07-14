@@ -1,16 +1,9 @@
-"""The alert-rule action, against a real Sentry.
+"""The alert-rule action against a real Sentry: the wiring, not the Jaga call.
 
-What is being tested here is the wiring, not the Jaga call. Three things have to hold, and
-none of them is under our control:
-
-1. an out-of-tree package can get a rule action into Sentry's registry at all. It can — but
-   NOT through `Plugin2.get_rules()`, the door Sentry documents for exactly this; on 26.3.1
-   the registry is built during `django.setup()`, before any plugin is registered. We register
-   from `JagaAppConfig.ready()` instead (see `sentry_jaga/apps.py`), and the first test below
-   is what would notice if that ever stopped landing;
-2. Sentry's rule API accepts a rule that uses the action (its serializer resolves action ids
-   against that same registry, so a POST that returns 200 proves the registration end to end);
-3. firing the rule files a Jaga task through our own `create_issue` and links it to the group.
+The registry is built during `django.setup()`, before any plugin is registered, so the documented
+`Plugin2.get_rules()` door is too late and the action is registered from `JagaAppConfig.ready()`
+instead. These tests cover that it lands there, that Sentry's rule API accepts a rule using it,
+and that firing the rule files a Jaga task and links it to the group.
 """
 
 import json
@@ -86,14 +79,8 @@ CREATED_TASK = {
 
 
 def test_the_action_reaches_sentrys_rule_registry() -> None:
-    """The action is in the live registry, put there by `JagaAppConfig.ready()`.
-
-    `sentry.rules.rules` is a module-level singleton built once, at import. Our entry in it is
-    not the documented `Plugin2.get_rules()` path (that one runs too late to matter) but an
-    explicit `rules.add()` from the Django app's `ready()`. This asserts the result rather than
-    the route, so it keeps holding if we ever go back to the plugin — and fails loudly if the
-    `ready()` hook stops firing.
-    """
+    """The action is in the live registry, put there by `JagaAppConfig.ready()`; this asserts the
+    result rather than the route, so it fails loudly if that hook ever stops firing."""
     by_id = {cls.id: cls for _, cls in rules}
 
     assert ACTION_ID in by_id, "the rule never reached the registry"
@@ -102,8 +89,8 @@ def test_the_action_reaches_sentrys_rule_registry() -> None:
 
 
 def test_the_action_is_registered_exactly_once() -> None:
-    """`RuleRegistry.add` appends to a list — a double registration would show the action
-    twice in the alert-rule action picker."""
+    """`RuleRegistry.add` appends to a list, so a double registration would show the action twice
+    in the alert-rule action picker."""
     assert [cls for _, cls in rules if cls is JagaCreateTicketAction] == [JagaCreateTicketAction]
 
 
@@ -139,23 +126,17 @@ class JagaTicketRuleTest(RuleTestCase, BaseAPITestCase):
 
     @responses.activate
     def test_firing_the_rule_creates_a_jaga_task_and_links_it_to_the_group(self) -> None:
-        """End to end: Sentry fires the action and a Jaga task appears, linked to the group.
-
-        `TicketEventAction.after()` yields a future onto Sentry's `create_issue` utility, which
-        calls OUR `installation.create_issue(data)` and then records the ExternalIssue and the
-        GroupLink. Note what the rule is saved WITHOUT: a title. The ticket-rule modal hides
-        that field and Sentry fills it from the event at fire time — so if our form named the
-        title anything but `title`, the task would come out nameless.
-        """
+        """End to end: Sentry fires the action and a Jaga task appears, linked to the group. The
+        rule is saved WITHOUT a title — Sentry fills it from the event at fire time — so a form
+        that named the title anything but `title` would file a nameless task."""
         responses.add(responses.POST, f"{API}/v1/auth/login", json=AUTH_OK, status=200)
         responses.add(responses.GET, f"{API}/v1/project/1/taskType/10", json=ATTRS_RESPONSE)
         responses.add(
             responses.POST, f"{API}/v1/task/createByTaskType/1/10", json=CREATED_TASK, status=200
         )
 
-        # Save the rule through Sentry's own API. This is a load-bearing part of the test: the
-        # rule serializer resolves `id` against the rule registry, so a 200 here is proof that
-        # the action really is registered — not just importable.
+        # Load-bearing: the rule serializer resolves `id` against the rule registry, so a 200 here
+        # proves the action really is registered, not merely importable.
         response = self.client.post(
             reverse(
                 "sentry-api-0-project-rules",
@@ -207,8 +188,8 @@ class JagaTicketRuleTest(RuleTestCase, BaseAPITestCase):
             for item in json.loads(create_call.request.body)["attributes"]
         }
 
-        # The title Jaga got is the event's own, and the description carries the Sentry link
-        # plus the footer naming the rule.
+        # The title Jaga got is the event's own; the description carries the Sentry link and the
+        # footer naming the rule.
         assert cells[100] == event.group.title
         assert "Sentry issue:" in cells[101]
         assert "Sentry alert rule" in cells[101]

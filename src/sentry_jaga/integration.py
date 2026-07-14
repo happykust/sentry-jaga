@@ -51,16 +51,11 @@ class JagaIntegration(JagaSyncMixin, IntegrationInstallation):
 def _assert_concrete(cls: type[IntegrationInstallation]) -> None:
     """Concreteness gate for `JagaIntegration` — the only guard the Sentry layer has.
 
-    The Sentry layer is not covered by tests (the `sentry` package is absent from the unit
-    run); mypy against the Sentry sources is what holds it. But
-    `integration_cls: type[IntegrationInstallation] | None` in `IntegrationProvider` is not
-    a `type[T]` parameter, and mypy does NOT check `type-abstract` on assignment: a class
-    that lost the implementation of an abstract Sentry method used to sail through the gate
-    silently (the regression fixed by a16d2db) and only blew up at runtime.
-
-    Passing the class into a `type[IntegrationInstallation]` parameter turns that check on:
-    a forgotten abstract method becomes a `[type-abstract]` error in the "Types against the
-    Sentry API" CI job.
+    The Sentry base classes are ABCs, but `IntegrationProvider.integration_cls` is not a `type[T]`
+    parameter and mypy does NOT check `type-abstract` on assignment: a class that lost the
+    implementation of an abstract Sentry method used to sail through silently (the regression fixed
+    by a16d2db) and only blew up at runtime. Passing the class into a
+    `type[IntegrationInstallation]` parameter turns that check on.
     """
 
 
@@ -72,14 +67,10 @@ class JagaIntegrationProvider(IntegrationProvider):
     name = "Jaga"
     metadata = JAGA_METADATA
     integration_cls = JagaIntegration
-    # TICKET_RULES is claimed, following `jira` (`jira_server` describes the feature in its
-    # catalogue entry but omits it here — an inconsistency upstream, not a signal). We do ship
-    # the rule action (`notify_action.JagaCreateTicketAction`), so the directory should say so.
-    #
-    # The only functional gate it adds is `workflow_engine.processors.action.is_action_permitted`,
-    # which turns each claimed feature into a required org flag — here
-    # `organizations:integrations-ticket-rules`, a *permanent* feature that defaults to True
-    # (sentry/features/permanent.py). So claiming it cannot switch the action off.
+    # TICKET_RULES is claimed because we do ship the rule action
+    # (`notify_action.JagaCreateTicketAction`). The only gate it adds is `is_action_permitted`,
+    # which requires the org flag `organizations:integrations-ticket-rules` — a *permanent* feature
+    # defaulting to True — so claiming it cannot switch the action off.
     features = frozenset(
         [
             IntegrationFeatures.ISSUE_BASIC,
@@ -97,9 +88,8 @@ class JagaIntegrationProvider(IntegrationProvider):
         return {
             "external_id": instance_url,
             "name": f"Jaga ({instance_url})",
-            # `icon` is deliberately omitted: there is no logo file in the repository yet,
-            # and a broken link to GitHub from an air-gapped network is worse than Sentry's
-            # generic icon.
+            # `icon` is omitted: a broken link to GitHub from an air-gapped network is worse than
+            # Sentry's generic icon.
             "metadata": {
                 "instance_url": instance_url,
                 "email": data["email"],

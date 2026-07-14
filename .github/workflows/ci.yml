@@ -63,12 +63,8 @@ jobs:
     name: Sentry layer tests
     runs-on: ubuntu-latest
     # Sentry cannot be installed as a package (not on PyPI above 23.7.1; its source tree has no
-    # [build-system] and `version = "0.0.0"`), so these tests run inside Sentry's *own*
-    # environment: a checkout of the tag, its lock installed by hand, its pytest pointed at our
-    # test directory. The whole recipe is written up in CONTRIBUTING.md.
-    #
-    # This job was `continue-on-error` until it had gone green on a runner once. It has (68/68,
-    # against a real Sentry 26.3.1), so it now blocks a merge like the rest of them.
+    # build backend), so these tests run inside Sentry's *own* environment: a checkout of the tag,
+    # its lock installed by hand, its pytest pointed at our test directory. Recipe: CONTRIBUTING.md.
     env:
       SENTRY_SRC: ${{ github.workspace }}/.sentry-src
     steps:
@@ -86,9 +82,8 @@ jobs:
         with:
           enable-cache: true
 
-      # Postgres, Redis, ClickHouse, Snuba. Why exactly these four (and why no Kafka/Relay):
-      # see the comments in docker-compose.test.yml. `--wait` blocks until every healthcheck
-      # is green, so the test step cannot start against a half-booted Snuba.
+      # Postgres, Redis, ClickHouse, Snuba — why exactly these four, and why no Kafka/Relay: see
+      # docker-compose.test.yml. `--wait` blocks until every healthcheck is green.
       - name: Start the test infrastructure
         run: docker compose -f docker-compose.test.yml up -d --wait
 
@@ -98,10 +93,9 @@ jobs:
         working-directory: .sentry-src
         run: uv export --frozen --no-hashes --no-emit-project --group dev -o "$RUNNER_TEMP/sentry-reqs.txt"
 
-      # Run from $RUNNER_TEMP, NOT from the checkout: inside it, `uv pip` would pick up Sentry's
-      # own [tool.uv] block, which pins a default index meant for its internal image build.
-      # The two indexes below cover both halves of the lock: ordinary packages from PyPI, and
-      # Sentry's own forks/wheels, which exist only on its public devinfra index.
+      # Run from $RUNNER_TEMP, NOT from the checkout: inside it, `uv pip` would pick up Sentry's own
+      # [tool.uv] block, which pins a default index meant for its internal image build. The two
+      # indexes cover both halves of the lock: PyPI, and Sentry's own wheels on its devinfra index.
       - name: Install the Sentry environment
         working-directory: ${{ runner.temp }}
         run: |
@@ -113,18 +107,13 @@ jobs:
             -r "$RUNNER_TEMP/sentry-reqs.txt"
 
       # `import xmlsec` dies with "lxml & xmlsec libxml2 library version mismatch", and Sentry's
-      # SAML2 auth provider imports it during django.setup() — so nothing boots at all, and every
-      # test in this job fails before it starts.
+      # SAML2 auth provider imports it during django.setup() — so nothing boots at all.
       #
-      # The cause is NOT a version pin. The PyPI wheels of lxml and of xmlsec each bundle their
-      # OWN copy of libxml2, and the two only work together when those copies happen to agree.
-      # Bumping xmlsec — which is enough on some machines, including the one this was developed
-      # on — merely changes *which* two copies you get; it does not make them agree, and on a
-      # GitHub runner they do not.
-      #
-      # Building BOTH from source does make them agree: they then link the one libxml2 that is
-      # actually installed, so there is only one copy left to disagree with. lxml is rebuilt at
-      # the version Sentry's lock already chose, so nothing else in the environment moves.
+      # The cause is not a version pin: the PyPI wheels of lxml and xmlsec each bundle their OWN
+      # copy of libxml2, and the two only work together when those copies happen to agree. Bumping
+      # xmlsec merely changes which two copies you get. Building both from source makes them link
+      # the one libxml2 that is actually installed, leaving nothing to disagree about. lxml is
+      # rebuilt at the version Sentry's lock already chose, so nothing else in the environment moves.
       - name: Rebuild lxml and xmlsec against one libxml2
         run: |
           sudo apt-get update
@@ -139,9 +128,9 @@ jobs:
           # Prove it before 68 tests blame something else for it.
           "$SENTRY_SRC/.venv/bin/python" -c 'import xmlsec, lxml.etree; print("xmlsec imports fine")'
 
-      # Sentry installs itself editable with its own tool instead of a build backend (its
-      # pyproject says so in as many words). `uv pip install -e .sentry-src` does NOT work:
-      # with no [build-system], the setuptools fallback chokes on Sentry's [project] table.
+      # Sentry installs itself editable with its own tool instead of a build backend.
+      # `uv pip install -e .sentry-src` does NOT work: with no [build-system], the setuptools
+      # fallback chokes on Sentry's [project] table.
       - name: Install Sentry (editable)
         working-directory: .sentry-src
         run: .venv/bin/python tools/fast_editable.py --path .
@@ -151,13 +140,12 @@ jobs:
         run: uv pip install --python "$SENTRY_SRC/.venv/bin/python" -e "$GITHUB_WORKSPACE"
 
       # Sentry's pytest, our tests. Every flag is load-bearing:
-      #   PYTHONPATH  — Sentry appends its repo-root `fixtures` package to INSTALLED_APPS, so
-      #                 the repo root has to be importable or django.setup() dies.
-      #   -c          — Sentry's pytest config, not ours; it carries `--nomigrations`, without
-      #                 which the test DBs are built by replaying Sentry's whole migration history.
-      #   -p          — Sentry's pytest plugin (normally pulled in by its tests/conftest.py, which
-      #                 we cannot load: both repos have a top-level `tests` package and it would
-      #                 shadow ours). It configures Django, the silo databases and initialize_app().
+      #   PYTHONPATH  — Sentry puts its repo-root `fixtures` package into INSTALLED_APPS, so the
+      #                 repo root has to be importable or django.setup() dies.
+      #   -c          — Sentry's pytest config, not ours; it carries `--nomigrations`.
+      #   -p          — Sentry's pytest plugin, which configures Django and the silo databases. It
+      #                 normally comes from its tests/conftest.py, which we cannot load: both repos
+      #                 have a top-level `tests` package and Sentry's would shadow ours.
       - name: Run the Sentry layer tests
         working-directory: .sentry-src
         env:

@@ -24,24 +24,16 @@ AUTH_OK = {
 }
 
 
-# The installation pipeline view (/organizations/<org>/integrations/jaga/setup/) is a
-# control-silo view: `Integration` and `OrganizationIntegration` live in the control silo. In
-# the default test silo mode (CELL) the request is rejected before it ever reaches the pipeline
-# — "Received GET request ... to server in REGION mode. This view is available only in:
-# CONTROL, MONOLITH". Sentry marks its own installation tests the same way (see
-# BitbucketServerIntegrationTest, the closest analogue: a self-hosted instance with a URL and
-# credentials in the form).
+# The installation pipeline view is a control-silo view (`Integration` and
+# `OrganizationIntegration` live there): in the default CELL mode the request is rejected before it
+# ever reaches the pipeline. Sentry marks its own installation tests the same way.
 @control_silo_test
 class JagaInstallationTest(IntegrationTestCase):
     provider = JagaIntegrationProvider
 
     def test_setup_form_renders_fields_through_crispy(self) -> None:
-        """The setup page renders every field, its help text and the service-account notice.
-
-        A bare `assert status_code == 200` would still pass if `{% load crispy_forms_tags %}`
-        silently produced nothing — crispy is Sentry's, not ours, and the template only works
-        because Sentry ships django-crispy-forms (Jira Server's setup page uses it too).
-        """
+        """A bare `assert status_code == 200` would still pass if `{% load crispy_forms_tags %}`
+        silently produced nothing — crispy is Sentry's, not ours."""
         resp = self.client.get(self.init_path)
         assert resp.status_code == 200
         html = resp.content.decode()

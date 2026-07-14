@@ -1,13 +1,10 @@
 """Issue-layer logic: building Sentry forms and operating on Jaga tasks.
 
-This module is framework-agnostic — it does NOT import `sentry`. The integration-layer
-classes (`issues.py`, `sync.py`) are thin delegates on top of these functions. That way
-all the real logic is covered by unit tests without Sentry's test stack
-(Postgres/Kafka/Snuba).
+Framework-agnostic — does NOT import `sentry`, so all the real logic is unit-testable without
+Sentry's test stack. `issues.py` and `sync.py` are thin delegates on top of these functions.
 
-The field-dict format is the one Sentry's frontend understands (`ExternalIssueForm`):
-name, label, type (string|textarea|select), default, choices, required,
-multiple, updatesForm, help.
+Field dicts are in the format Sentry's frontend understands (`ExternalIssueForm`): name, label,
+type (string|textarea|select), default, choices, required, multiple, updatesForm, help.
 """
 
 from __future__ import annotations
@@ -38,44 +35,37 @@ from sentry_jaga.fields import (
 logger = logging.getLogger("sentry_jaga.issue_config")
 
 SEARCH_LIMIT = 20
-# `updatesForm` makes Sentry's frontend re-fetch the config on every keystroke. There is
-# nowhere to hook up a debounce of our own, so we damp the noise with a minimum query
-# length instead.
+# `updatesForm` makes Sentry's frontend re-fetch the config on every keystroke, and there is
+# nowhere to hook up a debounce of our own — so we damp the noise with a minimum query length.
 MIN_QUERY_LENGTH = 3
 RESOLVED_COMMENT = "The Sentry issue has been resolved. This task can be completed."
 UNRESOLVED_COMMENT = "The Sentry issue has been reopened: the error happened again."
 
-# The status *categories* Jaga groups every status under. The sync maps a Sentry resolve onto
-# one of these — not onto a status id — because a status id is meaningless outside its own
-# workflow: a live instance carries ~90k statuses across ~15k workflows, and they are all
-# variations on these three categories. Mapping by category means one setting for the whole
-# organization; mapping by id would mean a per-space mapping table (what Jira Server does) and
-# an unusable dropdown of 90k entries.
+# The status *categories* Jaga groups every status under. The sync maps a Sentry resolve onto a
+# CATEGORY, not onto a status id, because an id is meaningless outside its own workflow: a live
+# instance carries ~90k statuses across ~15k workflows. Mapping by id would mean a per-space
+# mapping table (what Jira Server does) and an unusable dropdown of 90k entries.
 CATEGORY_TODO = "status.category.todo"
 CATEGORY_IN_PROGRESS = "status.category.inprogress"
 CATEGORY_DONE = "status.category.done"
 
-# The create-form fields whose last used value is remembered per Sentry project. Sentry stores
-# them itself (`IssueBasicIntegration.store_issue_last_defaults`), keyed by the names below —
-# which is why they must stay in step with the field names `build_create_config` emits.
+# Create-form fields whose last used value Sentry remembers per project
+# (`IssueBasicIntegration.store_issue_last_defaults`), keyed by the names below — so they must
+# stay in step with the field names `build_create_config` emits.
 PERSISTED_FIELDS = ("project", "issue_type")
 
-# The label every task created from Sentry is tagged with, unless the organization says
-# otherwise. An empty setting means no label at all. The default lives here, in the core,
-# because two places must agree on it: the org-config field that renders it (`sync.py`) and the
-# fallback the create falls back to before that config was ever saved (`issues.py`).
+# The label every task created from Sentry is tagged with, unless the organization says otherwise
+# (an empty setting means no label). It lives here because two places must agree on it: the
+# org-config field that renders it (`sync.py`) and the create-time fallback (`issues.py`).
 DEFAULT_AUTO_LABEL = "sentry"
 
-# The hidden field that carries the Sentry issue through the create form and back to
-# `create_issue`, which is otherwise handed the form data and NOTHING else — no group, no event
-# (there is no "after create, with the event" hook anywhere in Sentry's issue contract).
+# The hidden field that carries the Sentry issue through the create form into `create_issue`,
+# which is otherwise handed the form data and NOTHING else — no group, no event.
 #
-# It is emitted only when there IS a group (see `build_create_config`), which is not a detail:
-# the alert-rule ticket modal renders this very form with `group=None`
-# (`IntegrationSerializer`: 'Query param "action" only attached in TicketRuleForm modal'), and
-# whatever the form returns is SAVED INTO THE RULE. A group id baked in there would be frozen
-# forever, and every task the rule ever filed would get the event of one long-dead issue
-# attached. No field, no attachment — the honest outcome.
+# Emitted only when there IS a group (see `build_create_config`): the alert-rule ticket modal
+# renders this very form with `group=None`, and whatever the form returns is SAVED INTO THE RULE.
+# A group id baked in there would be frozen forever, and every task the rule ever filed would get
+# the event of one long-dead issue attached.
 GROUP_ID_FIELD = "sentry_group_id"
 
 EVENT_ATTACHMENT_CONTENT_TYPE = "application/json"
@@ -98,15 +88,12 @@ def _project_choices(projects: list[Project]) -> list[tuple[str, str]]:
 
 
 def _selected_id(params: dict[str, Any], key: str, available: list[int]) -> int:
-    """The id selected in `params` — but only if it is among the available ones.
+    """The id selected in `params` if it is among the available ones, else the first available.
 
-    With `updatesForm`, Sentry's frontend resends EVERY form field, not just the one that
-    changed. After the space is switched, `params` still carries the `issue_type` of the
-    previous one: taking it at face value means a 404 from Jaga or, worse, silently
-    creating a task whose type belongs to another space. So the value is validated against
-    the current list, and on a miss we fall back to the first available one.
-
-    `available` is never empty: the caller guarantees that.
+    With `updatesForm` the frontend resends EVERY field, so after a space switch `params` still
+    carries the previous space's `issue_type`. Taking it at face value means a 404 from Jaga or,
+    worse, a task whose type belongs to another space. `available` is never empty: the caller
+    guarantees that.
     """
     raw: Any = params.get(key)
     try:
@@ -117,17 +104,11 @@ def _selected_id(params: dict[str, Any], key: str, available: list[int]) -> int:
 
 
 def _with_defaults(params: dict[str, Any], defaults: dict[str, Any] | None) -> dict[str, Any]:
-    """The form selection to render: what the user is doing now, over what they did last time.
+    """The live form state (`params`) over what Sentry remembered last time (`defaults`).
 
-    `defaults` are the values Sentry remembered from this project's last create (see
-    `PERSISTED_FIELDS`); `params` is the live state of the form. `params` must win — with
-    `updatesForm` the frontend resends every field on every keystroke, so the moment the user
-    touches the space select, `params` carries their choice and the remembered one is history.
-
-    Empty values in `params` are dropped rather than allowed to win. On the first render the
-    frontend sends no space at all, but a blank is also what an unset select serialises to, and
-    a blank taken at face value would silently throw the remembered choice away — reinstating
-    the very bug this is here to fix.
+    `params` must win: with `updatesForm` the frontend resends every field, so it carries the
+    user's current choice. Empty values are dropped rather than allowed to win — an unset select
+    serialises to a blank, and a blank taken at face value would throw the remembered choice away.
     """
     merged = dict(defaults or {})
     merged.update({key: value for key, value in params.items() if value not in (None, "")})
@@ -144,8 +125,8 @@ def _require_projects(client: JagaClient) -> list[Project]:
 def _has_visible(attributes: list[Attribute], object_type: str) -> bool:
     """Is this attribute both present on the task type and shown in the form?
 
-    Gates the extra fetches for assignees and labels: a task type that has no such attribute
-    (or hides it) must not cost an HTTP request per form render.
+    Gates the extra fetches for assignees and labels: a task type that has no such attribute (or
+    hides it) must not cost an HTTP request per form render.
     """
     attr = find_attribute(attributes, object_type)
     return attr is not None and attr.visible
@@ -156,10 +137,9 @@ def _warn_if_no_system_attributes(
 ) -> None:
     """Warn if not a single system attribute was recognised on the task type.
 
-    The mnemonics `task.task_title` / `task.content` are confirmed against a live instance,
-    but they are what a Jaga deployment *happened* to expose, not a documented contract. If a
-    deployment renames them, the form quietly comes out without a title and a description —
-    and the Sentry context never reaches the task. Let the miss be visible in the logs.
+    The mnemonics `task.task_title` / `task.content` are confirmed against a live instance, but
+    they are not a documented contract. A deployment that renames them gets a form with no title
+    and no description, and the Sentry context never reaches the task — so log the miss.
     """
     if find_attribute(attributes, TITLE_OBJECT_TYPE) or find_attribute(
         attributes, DESCRIPTION_OBJECT_TYPE
@@ -191,12 +171,9 @@ def _project_field(projects: list[Project], project_id: int) -> dict[str, Any]:
 def _group_id_field(group_id: str | None) -> list[dict[str, Any]]:
     """The Sentry issue, carried through the form as a hidden field — when there is one.
 
-    `hidden` is a field type Sentry's frontend knows (`static/app/components/forms/types.tsx`);
-    it renders as a `display: none` input whose default is submitted along with the rest of the
-    form. That is the whole trick: `create_issue` gets the form data and nothing else, so this is
-    the only way the issue can reach it.
-
-    None means no field at all — see `GROUP_ID_FIELD` for why that matters for alert rules.
+    `hidden` is a field type Sentry's frontend knows: a `display: none` input whose default is
+    submitted with the rest of the form. None means no field at all — see `GROUP_ID_FIELD` for
+    why that matters for alert rules.
     """
     if group_id is None:
         return []
@@ -213,13 +190,9 @@ def build_create_config(
 ) -> list[dict[str, Any]]:
     """The create-form cascade: space -> task type -> dynamic attributes.
 
-    `defaults` carries the space and the task type this Sentry project last created a task with,
-    so that a team that always files into one space does not have to re-pick it every time. They
-    are only a starting point: `_selected_id` still validates them against what Jaga offers
-    *now*, so a remembered space the service account has since lost access to falls back to the
-    first available one instead of rendering a form that cannot be submitted.
-
-    `group_id` is the Sentry issue the form was opened from, if any — see `_group_id_field`.
+    `defaults` is the space and task type this Sentry project last filed into, a starting point
+    only: `_selected_id` still validates them against what Jaga offers *now*. `group_id` is the
+    Sentry issue the form was opened from, if any — see `_group_id_field`.
     """
     selection = _with_defaults(params, defaults)
     projects = _require_projects(client)
@@ -233,7 +206,7 @@ def build_create_config(
     if not task_types:
         return fields
 
-    # Types are validated against the list of the CURRENT space: see `_selected_id`.
+    # Types are validated against the CURRENT space's list: see `_selected_id`.
     type_id = _selected_id(selection, "issue_type", [t.id for t in task_types])
     fields.append(
         {
@@ -254,8 +227,8 @@ def build_create_config(
         for attr in attributes
         if attr.dictionary_id is not None and attr.visible
     }
-    # Assignees and labels carry no `dictionaryId`: their values come from endpoints of their
-    # own. Only pay for them when the task type actually shows the attribute.
+    # Assignees and labels carry no `dictionaryId`; their values come from endpoints of their own.
+    # Only pay for them when the task type actually shows the attribute.
     user_choices = (
         client.get_space_users(project_id)
         if _has_visible(attributes, ASSIGNEE_OBJECT_TYPE)
@@ -281,13 +254,10 @@ def create_task_from_form(
 ) -> dict[str, Any]:
     """Create a Jaga task from the data submitted in a Sentry form.
 
-    `auto_label` is the name of the label every task filed from Sentry carries, so that all of
-    them can be found in Jaga with one filter (`DEFAULT_AUTO_LABEL`; an empty string turns it
-    off). It is resolved to an id here rather than in the form, because the label may not exist
-    in Jaga yet — `get_or_create_label` makes it on first use.
-
-    The label is NOT looked up when the task type has no labels attribute: not every type does,
-    and a form render must not cost an HTTP call that can only end in a cell Jaga would reject.
+    `auto_label` (see `DEFAULT_AUTO_LABEL`; an empty string turns it off) is resolved to an id
+    here rather than in the form, because the label may not exist in Jaga yet —
+    `get_or_create_label` makes it on first use. It is skipped when the type has no labels
+    attribute, so a create cannot cost an HTTP call that can only end in a cell Jaga would reject.
     """
     project_id = int(form_data["project"])
     type_id = int(form_data["issue_type"])
@@ -297,9 +267,8 @@ def create_task_from_form(
     if not payload:
         raise JagaError("Not a single task attribute was filled in.")
 
-    # Deliberately not gated on the attribute being `visible`: a type that hides its labels from
-    # the form still has them, and the point of the auto-label is that EVERY task from Sentry
-    # carries it. The user cannot have chosen anything there, so there is nothing to merge with.
+    # Not gated on `visible`: a type that hides its labels from the form still has them, and the
+    # point of the auto-label is that EVERY task from Sentry carries it.
     label = auto_label.strip()
     if label and find_attribute(attributes, LABEL_OBJECT_TYPE) is not None:
         merge_auto_label(payload, attributes, client.get_or_create_label(label))
@@ -308,19 +277,16 @@ def create_task_from_form(
     # was actually picked, rather than for every member when the form was drawn.
     resolve_assignee_cells(client, payload, attributes)
 
-    # The space and the task type have no form field of their own, so nothing above produces
-    # them — and Jaga answers 500 to a create that leaves them out of `attributes`, even
-    # though both ids are right there in the URL. See `injected_attributes`.
+    # Jaga answers 500 to a create that leaves the space and the task type out of `attributes`,
+    # even though both ids are right there in the URL. See `injected_attributes`.
     payload.extend(injected_attributes(attributes, project_id, type_id))
 
     task = client.create_task(project_id, type_id, payload)
 
     title_attr = find_attribute(attributes, TITLE_OBJECT_TYPE)
     title = str(form_data.get(field_name(title_attr), "")) if title_attr else task.code
-    # `metadata` travels into `ExternalIssue`: `task_id` is Jaga's own id for the task, which
-    # nothing but Jaga can reconstruct from the code. It is NOT a shortcut for the status sync —
-    # that one has to fetch the task anyway, for its `statusTransitions` and its space (see
-    # `apply_status_sync`) — it is the stable handle on the task, kept for the logs and for a
+    # `metadata` travels into `ExternalIssue`. `task_id` is Jaga's own id for the task, which
+    # nothing but Jaga can reconstruct from the code: the stable handle, kept for the logs and a
     # future inbound sync. Cf. `get_task_summary`, which records the same thing on a link.
     return {
         "key": task.code,
@@ -335,15 +301,11 @@ def resolve_assignee_cells(
 ) -> None:
     """Turn the emails the assignee select submitted into the UUIDs Jaga stores. In place.
 
-    The select's values are emails and not UUIDs on purpose — see `JagaClient.get_space_users`:
-    a UUID costs one HTTP call *per person*, and paying that for every member of a space every
-    time the create form is drawn would hang the form. Here only the people who were actually
-    chosen are resolved, which is almost always exactly one.
+    The select's values are emails and not UUIDs on purpose: a UUID costs one HTTP call *per
+    person* (see `JagaClient.get_space_users`), so only the people actually chosen are resolved.
 
-    An email Jaga does not know is a hard failure, not a silent drop. The user picked a person
-    on purpose; filing the task without them — or, worse, sending an email where a UUID belongs
-    and letting Jaga refuse the whole create with a message about a field the user cannot see —
-    is worse than saying who could not be found.
+    An email Jaga does not know is a hard failure, not a silent drop — the user picked that person
+    on purpose.
     """
     attr = find_attribute(attributes, ASSIGNEE_OBJECT_TYPE)
     if attr is None:
@@ -356,9 +318,9 @@ def resolve_assignee_cells(
     emails = [str(item) for item in (raw if isinstance(raw, list) else [raw]) if str(item).strip()]
 
     if not emails:
-        # Nobody was picked (a blank or whitespace-only value got this far). The cell is REMOVED
-        # rather than sent empty: an empty list is not "no opinion" to Jaga, it is the instruction
-        # to clear the assignee — and `""` with `referenceValue: true` is not a reference at all.
+        # Nobody was picked. The cell is REMOVED rather than sent empty: to Jaga an empty list is
+        # not "no opinion", it is the instruction to clear the assignee — and `""` with
+        # `referenceValue: true` is not a reference at all.
         payload.remove(cell)
         return
 
@@ -366,10 +328,9 @@ def resolve_assignee_cells(
     for email in emails:
         person = client.find_person_by_email(email)
         if person is None:
-            # Loud, and named. In the interactive form Sentry shows this to whoever picked them.
-            # When an alert rule replays a form whose assignee has since left Jaga, nobody sees
-            # the error — so the log line is the only thing that will explain why that rule
-            # stopped filing tasks. See "Limitations" in the README.
+            # In the interactive form Sentry shows this to whoever picked them. When an alert rule
+            # replays a form whose assignee has since left Jaga, nobody sees the error — the log
+            # line is then the only thing explaining why that rule stopped filing tasks.
             logger.warning("jaga.issue.assignee_not_in_jaga", extra={"email": email})
             raise JagaError(f"Jaga has no user with the email {email}.")
         uuids.append(person.uuid)
@@ -382,9 +343,8 @@ def resolve_assignee_cells(
 def assignee_field_id(raw_task: dict[str, Any]) -> int | None:
     """The `fieldId` of a task's assignee attribute, read off the task itself.
 
-    A task's own attribute cells carry their `fieldId`, so the id needed to PATCH the assignee
-    comes free with the task the sync already fetched — no round trip to the task type. A type
-    without an assignee attribute at all returns None, and the sync then has nothing to write.
+    A task's own cells carry their `fieldId`, so the id needed to PATCH the assignee comes free
+    with the task the sync already fetched. None means the type has no assignee attribute.
     """
     for raw in raw_task.get("attributes", []):
         if raw.get("objectTypeNameM") == ASSIGNEE_OBJECT_TYPE:
@@ -398,13 +358,9 @@ def apply_assignee_sync(
 ) -> str:
     """Reflect a Sentry assignment on the linked Jaga task. Returns what it did.
 
-    `emails` are every address the Sentry user has — Sentry allows several, and which one Jaga
-    knows them by is not knowable in advance, so the first that resolves wins. Unassigning
-    (`assign=False`, or a user with no address Jaga knows) clears the field with an empty list,
-    which is what Jaga takes for "nobody".
-
-    Assigning a *team* is not a thing here: Sentry can assign an issue to a team, and Sentry's
-    own sync task calls this with `user=None` in that case, which lands as an unassignment.
+    `emails` is every address the Sentry user has, best first — which one Jaga knows them by is
+    not knowable in advance, so the first that resolves wins (see `JagaSyncMixin._addresses_of`).
+    Unassigning (`assign=False`) clears the field with an empty list, Jaga's "nobody".
     """
     raw_task = client.get_task_by_code(task_code)
     field_id = assignee_field_id(raw_task)
@@ -419,9 +375,9 @@ def apply_assignee_sync(
 
     person = next(filter(None, (client.find_person_by_email(email) for email in emails)), None)
     if person is None:
-        # Reported, NOT acted on. The caller turns this into a halt; what it must never become is
-        # an unassignment, which would take a real person off a real task merely because Sentry
-        # could not find their Jaga counterpart.
+        # Reported, NOT acted on. The caller turns this into a halt; it must never become an
+        # unassignment, which would take a real person off a real task merely because Sentry could
+        # not find their Jaga counterpart.
         return ASSIGNEE_NOT_FOUND
 
     client.set_task_assignees(int(raw_task["id"]), field_id, [person.uuid])
@@ -431,9 +387,8 @@ def apply_assignee_sync(
 def _event_attachment_name(event_id: str) -> str:
     """The file name the event is attached under.
 
-    The event id is in the name on purpose: a task can be filed from an issue more than once,
-    and two attachments called `sentry-event.json` on the same task tell nobody which event is
-    which. An event with no id is not a thing Sentry produces, but the fallback costs a line.
+    The event id is in the name because a task can be filed from an issue more than once, and two
+    attachments called `sentry-event.json` tell nobody which event is which.
     """
     return f"sentry-event-{event_id}.json" if event_id else "sentry-event.json"
 
@@ -443,9 +398,8 @@ def attach_event_json(
 ) -> dict[str, Any]:
     """Attach the JSON of a Sentry event to a task that has just been created.
 
-    The serialization is the Sentry layer's job (only it can see an event); what the core owns is
-    the name, the content type and the call. Jaga wants the space as well as the task: attachments
-    are filed under a space (see `JagaClient.attach_file`).
+    Serializing (and scrubbing) the event is the Sentry layer's job. Jaga files attachments under
+    a space, so the space id is needed as well as the task (see `JagaClient.attach_file`).
     """
     return client.attach_file(
         space_id,
@@ -459,15 +413,10 @@ def attach_event_json(
 def _comment_field(sentry_url: str | None) -> list[dict[str, Any]]:
     """The comment posted on the task when it is linked — as an editable, clearable field.
 
-    Every issue integration upstream (Jira Server, GitHub, GitLab, Bitbucket) does exactly this,
-    and the shape is not an accident: `after_link_issue` is handed the form data and nothing
-    else — not the group, not the URL — so the only way the Sentry link can reach it is baked
-    into this field's default at render time, when the group *is* in hand.
-
-    That the field is editable is the feature, not a compromise: it doubles as the per-link
-    opt-out. Someone linking a task in a space where a Sentry URL means nothing to anybody just
-    clears the box, and no comment is posted — which is why this needs no organization-wide
-    toggle of its own.
+    `after_link_issue` is handed the form data and nothing else — not the group, not the URL — so
+    the only way the Sentry link can reach it is baked into this field's default at render time,
+    when the group *is* in hand. Editable is the feature: clearing the box is the per-link opt-out,
+    which is why this needs no organization-wide toggle.
     """
     if sentry_url is None:
         return []
@@ -493,32 +442,20 @@ def build_link_config(
 ) -> list[dict[str, Any]]:
     """Fields of the link form: a way to find a task — anywhere in Jaga — and a comment.
 
-    There is deliberately no space select here. Linking used to open with one, because Jaga's
-    per-space search (`/v1/task/searchByTitleCode`) demands a `projectId`: you had to remember
-    which space the task lived in before you could look for it. The global search does not, so
-    the space is gone from the form — you type, and the task is found wherever it is.
+    There is deliberately no space select: Jaga's global search needs no `projectId`, so a task is
+    found wherever it lives. The cost is that the global search returns a task's space as `null`
+    (`JagaClient.search_tasks_globally`), so a suggestion can only read `code — title`.
 
-    The cost of that is honest and small: the global search returns a task's space as `null`
-    (see `JagaClient.search_tasks_globally`), so a suggestion can only read `code — title`.
-    Fetching each hit's space one by one, on every keystroke, to decorate a dropdown is not a
-    trade worth making.
+    Which of the two searches we get depends on whether the admin pointed `ROOT_URLCONF` at
+    `sentry_jaga.urlconf` (see `urlconf.py`); the core must not import `sentry`, so the caller
+    (`issues.py`) resolves the URL and passes it down.
 
-    Two ways to search, and which one we get depends on something outside this package: whether
-    the admin pointed `ROOT_URLCONF` at `sentry_jaga.urlconf` (see `urlconf.py`).
-
-    * `search_url` given — the real thing. A `url` on a `select` field is what makes Sentry's
-      frontend treat it as an async select: it calls the endpoint as the user types, with its
-      own debounce, and renders the results. No `query` field is needed, and no search — indeed
-      no call to Jaga at all — runs while the form is merely being rendered.
-
-    * `search_url` is None — the fallback, and the only thing that worked before the endpoint
-      existed. The query is a plain text field with `updatesForm`, so Sentry re-fetches the
-      WHOLE config on every keystroke (there is no debounce on that path, and an external
-      package cannot ship JS to add one). We soften it on the server: nothing is searched below
-      `MIN_QUERY_LENGTH`.
-
-    The core must not know what a URL route is, let alone import `sentry`, so the caller
-    (`issues.py`) resolves it and passes it down.
+    * `search_url` given — a `url` on a `select` makes Sentry's frontend treat it as an async
+      select: it calls the endpoint as the user types, with its own debounce.
+    * `search_url` is None — the fallback: a text field with `updatesForm`, so Sentry re-fetches
+      the WHOLE config on every keystroke (no debounce on that path, and an external package
+      cannot ship JS to add one). Softened server-side: nothing below `MIN_QUERY_LENGTH` is
+      searched.
     """
     if search_url is not None:
         return [
@@ -526,8 +463,6 @@ def build_link_config(
                 "name": "externalIssue",
                 "label": "Task",
                 "type": "select",
-                # `url` IS the feature: `getFieldProps` in Sentry's frontend switches the
-                # select to async the moment it sees one. Without it the key is inert.
                 "url": search_url,
                 "required": True,
                 "help": (
@@ -585,8 +520,7 @@ def get_task_summary(client: JagaClient, code: str) -> dict[str, Any]:
 def search_task_summaries(client: JagaClient, query: str | None) -> list[dict[str, Any]]:
     """Tasks matching the query, across every space — what the autocomplete endpoint serves.
 
-    No space to scope by, and none in the answer either: the suggestion is `code — title` and
-    nothing else. See `build_link_config`.
+    No space to scope by, and none in the answer either. See `build_link_config`.
     """
     if not query:
         return []
@@ -603,10 +537,9 @@ def status_comment(is_resolved: bool) -> str:
 def extract_space_id(raw_task: dict[str, Any]) -> int | None:
     """The id of the space a task lives in, read off the task itself.
 
-    A task carries its space as an ordinary EAV attribute, so there is no need to remember it
-    at link time — which matters, because a task linked before this feature existed has nothing
-    but its code stored in Sentry. Verified against a live instance; the value may arrive
-    wrapped in a list, as multi-valued attributes do.
+    A task carries its space as an ordinary EAV attribute, so nothing has to be remembered at link
+    time — which matters for tasks linked before this feature existed. Verified against a live
+    instance; the value may arrive wrapped in a list, as multi-valued attributes do.
     """
     for raw in raw_task.get("attributes", []):
         if raw.get("objectTypeNameM") != SPACE_OBJECT_TYPE:
@@ -624,9 +557,8 @@ def extract_space_id(raw_task: dict[str, Any]) -> int | None:
 def reachable_status_ids(raw_task: dict[str, Any]) -> list[int]:
     """The statuses a task can move to from where it stands, deduplicated, order kept.
 
-    Jaga repeats ids in `statusTransitions` (a live instance returned the same id twice), and
-    the order is the one the workflow declares — which is the order we want to prefer targets
-    in, so it must survive the deduplication.
+    Jaga repeats ids in `statusTransitions` (a live instance returned the same id twice), and the
+    declared order is the order we prefer targets in — so it must survive the deduplication.
     """
     ids: list[int] = []
     for raw in raw_task.get("statusTransitions") or []:
@@ -644,10 +576,9 @@ def resolve_target_status(
 ) -> Status | None:
     """The status to move a task into: the first REACHABLE one in the wanted category.
 
-    The iteration is over the task's own transitions, not over the statuses of the space: a
-    status in the right category that the workflow cannot reach from where the task stands is
-    not a target, it is a 4xx waiting to happen. Returning None is a legitimate outcome (a
-    workflow with no "done" step out of the current status), and the caller comments instead.
+    Iterating the task's own transitions, not the space's statuses: a status in the right category
+    that the workflow cannot reach from here is a 4xx waiting to happen. None is a legitimate
+    outcome (no "done" step out of the current status) and the caller comments instead.
     """
     reachable = reachable_status_ids(raw_task)
     if not reachable:
@@ -672,10 +603,9 @@ def apply_status_sync(
     """Reflect a Sentry status change on the linked Jaga task. Returns what it did.
 
     The task is always fetched: the transition needs its `statusTransitions` and its space, and
-    neither is stored on the Sentry side. Moving the task is the point of the sync, but it is
-    not always possible — the workflow may simply have no step from here into the wanted
-    category — so a comment is the floor: it is posted whenever the move did not happen, and
-    additionally whenever `post_comment` asks for it.
+    neither is stored on the Sentry side. Moving the task is not always possible — the workflow
+    may have no step from here into the wanted category — so a comment is the floor: posted
+    whenever the move did not happen, and additionally whenever `post_comment` asks for it.
     """
     raw_task = client.get_task_by_code(task_code)
     task_id = int(raw_task["id"])
@@ -697,8 +627,7 @@ def apply_status_sync(
         action = f"moved to {target.name!r} (id={target.id})"
     else:
         if space_id is not None:
-            # Not an error — but silence here looks exactly like a broken sync from the
-            # outside. Name the task, where it stands, and where it could have gone.
+            # Not an error — but silence here looks exactly like a broken sync from the outside.
             logger.warning(
                 "jaga.sync.no_status_in_category",
                 extra={
@@ -721,11 +650,9 @@ def apply_status_sync(
 def _task_id_for(client: JagaClient, task_code: str, task_id: int | None) -> int:
     """Jaga's numeric id for a task, fetching it only when it is not already known.
 
-    Everything on the Sentry side is keyed by the task *code* (`ExternalIssue.key`) — the
-    comment endpoints want the numeric id. The id is recorded in `ExternalIssue.metadata` at
-    create and at link time (`create_task_from_form`, `get_task_summary`), so the caller can
-    usually hand it over; when it cannot — Sentry's comment tasks are given the key and nothing
-    else — the task is fetched for it.
+    Sentry keys everything by the task *code* (`ExternalIssue.key`); the comment endpoints want the
+    numeric id. It is recorded in `ExternalIssue.metadata` at create and link time, so the caller
+    can usually hand it over — Sentry's comment tasks cannot, and pay a fetch.
     """
     if task_id is not None:
         return int(task_id)
@@ -737,10 +664,10 @@ def post_task_comment(
 ) -> dict[str, Any]:
     """Post a comment on a task and return it as Jaga created it.
 
-    The return value is not decoration: Sentry reads the new comment's id out of it
-    (`IssueBasicIntegration.get_comment_id` -> `comment["id"]`) and stores it on the note as
-    `external_id`. That id is the only handle `edit_task_comment` below has — without it, an
-    edited Sentry note would post a second comment instead of amending the first.
+    The return value is load-bearing: Sentry reads the new comment's id out of it
+    (`IssueBasicIntegration.get_comment_id`) and stores it on the note as `external_id`. That id is
+    the only handle `edit_task_comment` has — without it, an edited note would post a second
+    comment instead of amending the first.
     """
     return client.create_comment(_task_id_for(client, task_code, task_id), content)
 

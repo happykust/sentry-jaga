@@ -7,39 +7,30 @@
 
 Integration between self-hosted Sentry and **Jaga**, the issue tracker by Rostelecom.
 
-The package adds an integration provider to Sentry: from an issue you can open a task in
-Jaga or link an existing one, and resolving the issue in Sentry moves the linked task to the
-status you configured (and, optionally, comments on it).
+The package adds an integration provider to Sentry: from an issue you can open a task in Jaga or
+link an existing one, and resolving the issue moves the linked task to the status you configured.
 
 ## Features
 
-- **Create a Jaga task from a Sentry issue**, with the full set of attributes of the chosen
-  task type. Jaga uses an EAV model — the set of fields depends on the pair
-  "space + task type" — so the create form is built dynamically and redrawn as you pick a
-  space and a type.
-
-  The space and task type you last filed into are **remembered per Sentry project**, so a team
-  that always files into one space does not have to pick it again every time.
-  Every task filed from Sentry is **labelled** (`sentry` by default), so the whole lot can be
-  found in Jaga with one filter. The label is created on first use; clear the setting to file
-  tasks without one.
-- **Link an existing Jaga task** to a Sentry issue: type part of a code or a title and the task
-  is found **across every space at once** — no space to pick first. A comment linking back to the
-  Sentry issue is posted on the task; the text is pre-filled in the link form, and you can reword
-  it or clear it to post nothing.
+- **Create a Jaga task from a Sentry issue**, with the attributes of the chosen task type. Jaga
+  uses an EAV model — the fields depend on the pair "space + task type" — so the create form is
+  built dynamically and redrawn as you pick a space and a type. The space and type last filed into
+  are remembered per Sentry project. Every task is labelled (`sentry` by default), so the whole lot
+  is one filter away in Jaga; clear the setting to file tasks without a label.
+- **Link an existing Jaga task**: type part of a code or a title and the task is found across every
+  space at once. A comment linking back to the Sentry issue is posted on the task; the text is
+  pre-filled in the link form, and you can reword it or clear it to post nothing.
 - **Attach the Sentry event to the task** as a JSON file, run through Sentry's own data scrubber
-  first, so it honours the project's privacy settings. **Off by default**, because an event still
-  carries personal data; see [Sync settings](#sync-settings).
-- **Status sync.** Resolving a Sentry issue **moves the linked task** to the status you chose
-  (and reopening it moves the task back); a comment can be posted on top. You map onto a status
-  *category* — Done / In progress / To do — and the concrete status is resolved per task from
-  the ones its own workflow allows.
-- **Comment sync.** Notes written on a Sentry issue can be posted as comments on the linked
-  Jaga task, attributed to their author; editing the note rewrites the comment it created. Off
-  by default — see [Sync settings](#sync-settings).
-- **Assignee sync.** Assigning a Sentry issue to someone **puts them on the linked Jaga task**,
-  and unassigning takes them off it again. The two systems are matched by email address. Off by
-  default — see [Sync settings](#sync-settings).
+  first. Off by default — see [Sync settings](#sync-settings).
+- **Status sync.** Resolving a Sentry issue moves the linked task to the status you chose (and
+  reopening it moves the task back); a comment can be posted on top.
+- **Comment sync.** Notes written on a Sentry issue can be posted as comments on the linked task,
+  attributed to their author; editing the note rewrites the comment it created. Off by default.
+- **Assignee sync.** Assigning a Sentry issue puts the person on the linked Jaga task; unassigning
+  takes them off. The two systems are matched by email. Off by default.
+- **Alert rules.** "Create a Jaga task in ... with these ..." is available as an action on an issue
+  alert rule: pick the space and the task type once, and every issue that trips the rule files a
+  task, linked to the Sentry issue exactly as a hand-created one is.
 
 ## Compatibility
 
@@ -71,31 +62,26 @@ status you configured (and, optionally, comments on it).
    ROOT_URLCONF = "sentry_jaga.urlconf"
    ```
 
-   This is the ordinary Django setting, and `sentry_jaga.urlconf` is Sentry's own urlconf with
-   the package's routes stacked on top — nothing of Sentry's is removed or shadowed. It exists
-   because Sentry has no hook for an out-of-tree package to add a route, and a search endpoint
-   is what an autocomplete needs.
-
-   **It is optional and nothing breaks without it.** With the line, the "Task" field of the link
-   form becomes a real autocomplete: you type, and Sentry queries the endpoint (debounced) and
-   shows the matches. Without it, the field falls back to searching by re-fetching the form as
-   you type — slower and chattier, but it works. See [Limitations](#limitations).
+   `sentry_jaga.urlconf` is Sentry's own urlconf with the package's routes stacked on top —
+   nothing of Sentry's is removed or shadowed. With the line, the "Task" field of the link form is
+   a real autocomplete; without it, the field falls back to re-fetching the form as you type.
+   Nothing breaks without it — see [Limitations](#limitations).
 
 4. Restart Sentry — the `web` process **and the one that runs background tasks**.
 
-   The status sync (moving the Jaga task when a Sentry issue is resolved) runs as a background
-   task, so it will silently do nothing if only `web` is restarted. Note that Sentry 26.3 no
-   longer uses Celery: `sentry run worker` has been removed in favour of `sentry run taskworker`.
+   The status sync runs as a background task, so it will silently do nothing if only `web` is
+   restarted. Note that Sentry 26.3 no longer uses Celery: `sentry run worker` has been removed in
+   favour of `sentry run taskworker`.
 
 ## Configuration
 
-Organization Settings → Integrations → **Jaga** → Install. In the form, enter the Jaga URL
-and the email and password of a service account. A test login is performed during
-installation, so invalid credentials show up right away.
+Organization Settings → Integrations → **Jaga** → Install. In the form, enter the Jaga URL and the
+email and password of a service account. A test login is performed during installation, so invalid
+credentials show up right away.
 
-The credentials are stored in Sentry's encrypted `Integration.metadata` field. Create a
-**dedicated service account** for the integration, with access only to the spaces you need
-to create tasks in: every task and comment will be created on its behalf.
+The credentials are stored in Sentry's encrypted `Integration.metadata` field. Create a **dedicated
+service account** with access only to the spaces you need: every task and comment is created on its
+behalf.
 
 ### Sync settings
 
@@ -112,246 +98,187 @@ Organization Settings → Integrations → **Jaga** → Configure:
 | Label to put on tasks created from Sentry | `sentry` | Every task the integration files carries this label. Empty box = no label. |
 | Attach the Sentry event to the task | **off** | Attach the JSON of the issue's latest event to the task, as a file. |
 
-**The event attachment is off by default on purpose — the file contains personal data.** An event
-carries the user's email, the request body and headers, cookies, and anything else your SDK sent. A
-Jaga task can have a much wider audience than a Sentry issue, and once a file is on a task it stays
-there. Turn this on only if that is acceptable.
+**The event attachment is off by default because an event carries personal data** — the user's
+email, the request body and headers, cookies — and a Jaga task can have a much wider audience than
+a Sentry issue.
 
-**The attachment is scrubbed by Sentry's own data scrubber before it leaves.** It goes through
-`sentry.relay.datascrubbing.scrub_data` — the same Relay engine, with the same rules, that cleans
-an event as it *arrives* in Sentry. So the file honours every privacy setting of the project and
-the organization, and not merely the ones this package happened to think of:
+**Assignee sync is off by default because it names a real person in another system**, and Sentry's
+idea of who owns an issue is not automatically the right answer inside Jaga.
 
-- **Prevent Storing of IP Addresses** — `user.ip_address` and `request.env.REMOTE_ADDR` come out
-  null, addresses inside headers and span tags become `[ip]`.
-- **Additional Sensitive Fields** (`sentry:sensitive_fields`) — a field you named comes out
-  `[Filtered]`.
-- **Data Scrubber** and its default rules — passwords, tokens, API keys and the rest of Sentry's
-  defaults are filtered, as they are on ingest.
-- **Advanced Data Scrubbing** (`sentry:relay_pii_config`) — the PII rules you wrote by hand are
-  applied too, project rules and organization rules both.
+**Comment sync is off by default because a Sentry note is internal discussion** — it can name a
+customer, a credential or a suspect commit — and forwarding it should be an admin's decision. (The
+comment posted when you *link* a task is a separate thing and needs no setting: clear the box in
+the link form to post nothing.)
 
-**It is stricter than Sentry's own "JSON" view of an event**, and that is deliberate. Sentry
-scrubs an event on the way *in*, so an event stored *before* you turned a setting on was never
-cleaned, and its JSON page still shows what is in it. Here the rules are applied to the stored
-event, at export time, so they cover every event however old. That page is one authorized person
-reading one event inside Sentry; this file leaves Sentry for a tracker whose audience you do not
-control, and it stays on the task for as long as the task does.
-
-**What the scrubber does not remove still travels.** By default that includes the user's email and
-the body of the request. If you need it gone, say so in the project's privacy settings — the
-attachment will then honour that, like everything else.
-
-It does **not** apply to tasks filed by an alert rule — see [Limitations](#limitations).
-
-**Comment sync is off by default on purpose.** A Sentry note is internal discussion — it can
-name a customer, a credential or a suspect commit — and the Jaga task may have a wider audience
-than the Sentry issue. Forwarding it should be a decision an admin takes, not a surprise they
-discover. (Every issue integration in Sentry upstream defaults this the same way.) With it on, a
-note becomes a comment as `<Author> wrote:` followed by the quoted text, and editing the note
-rewrites that comment rather than adding another.
-
-Note that the comment posted when you **link** an existing task is a separate thing and needs no
-setting: the link form pre-fills it and you can clear the box to post nothing.
-
-The two category settings offer **Done**, **In progress** and **To do** — the categories Jaga
-groups all of its statuses under. One setting covers every space: the concrete status is picked
-per task, from the ones its own workflow can reach (see [How it works](#how-it-works)). That is
-also why these three choices are constants in the code rather than something fetched from Jaga:
-the settings page has to render even when Jaga is unreachable — that is exactly when you might
-need it, if only to switch the sync off.
+The three status categories — **Done**, **In progress**, **To do** — are the categories Jaga groups
+all of its statuses under; one setting covers every space (see [How it works](#how-it-works)). They
+are constants in the code rather than fetched from Jaga, so that the settings page renders even
+when Jaga is unreachable — which is exactly when you may need to switch the sync off.
 
 ## How it works
 
 The integration talks to Jaga's REST API as the service account: a lazy login
-(`POST /v1/auth/login`), a token renewal on expiry (`POST /v1/auth/refresh`), and the token
-is cached in Sentry's Django cache.
+(`POST /v1/auth/login`), a token renewal on expiry (`POST /v1/auth/refresh`), and the token is
+cached in Sentry's Django cache.
 
-- **Create.** The form is built as a cascade: spaces (`GET /v1/project/list/my`, the list is
-  cached for 60 seconds) → task types (`GET /v1/project/{projectId}/taskType`) → the
-  attributes of the chosen type (`GET /v1/project/{projectId}/taskType/{taskTypeId}`), which
-  are rendered as form fields. Submitting creates the task through
-  `POST /v1/task/createByTaskType/{projectId}/{taskTypeId}`.
+### Create
 
-  Which attributes the form offers is decided by what the plugin can list the values of:
+The form is built as a cascade: spaces (`GET /v1/project/list/my`, cached for 60 seconds) → task
+types (`GET /v1/project/{projectId}/taskType`) → the attributes of the chosen type
+(`GET /v1/project/{projectId}/taskType/{taskTypeId}`), rendered as form fields. Submitting creates
+the task through `POST /v1/task/createByTaskType/{projectId}/{taskTypeId}`.
 
-  | Field | Rendered as | Values from |
-  | --- | --- | --- |
-  | Title (`task.task_title`) | text, pre-filled with the Sentry issue title | — |
-  | Description (`task.content`) | textarea, pre-filled with the Sentry context | — |
-  | Any attribute with a dictionary | select | `GET /v1/listRef/{dictionaryId}/any` |
-  | Assignees (`task.assignee_uuid`) | multi-select | `GET /v1/team/userRoles/applications/JAGA/projects/{projectId}` — the members of the space (groups are left out) |
-  | Label (`task.label_id`) | multi-select | `POST /v1/labels/getPage` |
+An attribute is offered only if the plugin can list its values:
 
-  The space and the task type are **not** shown as attributes — the cascade selects above
-  already ask for them — but they are still submitted inside `attributes`, because Jaga
-  rejects a create without them even though both ids are in the URL. The author and the
-  creation date are filled in by Jaga.
+| Field | Rendered as | Values from |
+| --- | --- | --- |
+| Title (`task.task_title`) | text, pre-filled with the Sentry issue title | — |
+| Description (`task.content`) | textarea, pre-filled with the Sentry context | — |
+| Any attribute with a dictionary | select | `GET /v1/listRef/{dictionaryId}/any` |
+| Assignees (`task.assignee_uuid`) | multi-select | `GET /v1/team/userRoles/applications/JAGA/projects/{projectId}` — the members of the space (groups are left out) |
+| Label (`task.label_id`) | multi-select | `POST /v1/labels/getPage` |
 
-  **The assignee select carries emails, not the UUIDs Jaga stores.** Jaga keeps a person's
-  `personUuid` — the only thing `task.assignee_uuid` accepts — behind
-  `POST /v1/team/userProfile/findByMailOrName`, which resolves **one** person per call, and no
-  member list returns it. Filling a select of *N* members with UUIDs would therefore cost *N*
-  HTTP calls before the form could be drawn. So the email travels in the form, and the UUID is
-  fetched for whoever was actually picked, at submit — one call instead of *N*, and the answer is
-  cached for an hour.
-- **The label on every task from Sentry.** The name of the label is resolved to an id through
-  `POST /v1/labels/list`, which is a get-or-create: the first task ever filed makes the label,
-  every later one reuses it. The id is **merged** into the `Label` cell of the create, so labels
-  you picked in the form yourself are kept — the automatic one is added to them, not put in
-  their place. A task type with no label attribute is filed without a label.
-- **Link.** A task is searched across **all** spaces at once
-  (`POST /v1/globalSearch/findTaskList`, starting from 3 characters of the query), then resolved
-  by code (`GET /v1/task/findExtendedWithFlexField/code/{taskCode}`). The link form has no space
-  select: Jaga's per-space search (`searchByTitleCode`) requires a `projectId`, the global one
-  does not.
+**The space and the task type are submitted inside `attributes` as well**, even though both ids are
+already in the URL: Jaga rejects a create without them. They are not shown as attributes — the
+cascade selects above already ask for them.
 
-  How you search depends on whether `ROOT_URLCONF` is set (step 3 of the installation). With
-  it, the "Task" field is an autocomplete backed by the package's own endpoint
-  (`/extensions/jaga/search/<org>/<integration_id>/`), which Sentry calls, debounced, as you
-  type. Without it, the field falls back to a plain text box that re-fetches the whole form on
-  every keystroke.
-- **Alert rules.** "Create a Jaga task in ... with these ..." is available as an action on an
-  issue alert rule: pick the space and the task type when you set the rule up, and every issue
-  that trips it files a task. The title and the description come from the event itself, and the
-  task is linked to the Sentry issue exactly as a hand-created one is — so the status sync
-  applies to it too.
-- **The event attachment.** With the toggle on, the issue's latest event is serialized with
-  `Event.as_dict()` — the same normalized form Sentry itself serves behind the "JSON" link on an
-  event page — and uploaded as `sentry-event-<event id>.json`
-  (`POST /v1/attacher/file/create?projectId=…&taskId=…`, multipart).
+**The assignee select carries emails, not the UUIDs Jaga stores.** A person's `personUuid` — the
+only thing `task.assignee_uuid` accepts — is only available from
+`POST /v1/team/userProfile/findByMailOrName`, which resolves one person per call, so filling a
+select of *N* members with UUIDs would cost *N* HTTP calls before the form could be drawn. The
+email travels in the form instead, and the UUID is fetched at submit for whoever was actually
+picked — one call, cached for an hour.
 
-  Before it is uploaded, the event is passed through `sentry.relay.datascrubbing.scrub_data` —
-  Sentry's own scrubber, with the project's and the organization's own rules (see
-  [Sync settings](#sync-settings)). What comes back is Relay's canonical form of the event, so it
-  is not byte-for-byte the `as_dict()` that went in: null-valued keys are dropped, the legacy
-  `message` alias is folded into `logentry` (whose `formatted`, and the event's `title`, keep the
-  text), and a `_meta` block records what was scrubbed.
+**The label** is resolved from its name through `POST /v1/labels/list`, which is a get-or-create.
+The id is *merged* into the `Label` cell, so labels you picked in the form yourself are kept. A task
+type with no label attribute is filed without a label.
 
-  It happens **after** the task is created, and a failed upload is logged and swallowed: the task
-  exists by then, and losing the create over an attachment would be a worse bug than losing the
-  attachment. A failing *scrub*, on the other hand, means **no attachment at all**: the scrub is
-  fail-closed, and an unscrubbed event is never the fallback. (Sentry's JSON view swallows a
-  failing scrub and serves the event anyway — defensible for a page, wrong for a file that leaves
-  the system.)
+### Link
 
-  The issue reaches the create through a **hidden field** in the form (`sentry_group_id`). Sentry
-  hands `create_issue()` the submitted form and nothing else — no group, no event — and there is
-  no "after create, with the event" hook to use instead. The field is only emitted when the form
-  is opened from an issue, which is why alert rules get no attachment: see
-  [Limitations](#limitations).
-- **Status sync.** When a Sentry issue is resolved or reopened, the linked task is **moved to
-  another status** (`POST /v1/task/updateTaskStatusAndFields`) — and, if you leave the comment
-  option on, a comment is posted as well (`POST /v1/comment`).
+A task is searched across all spaces at once (`POST /v1/globalSearch/findTaskList`, from 3
+characters), then resolved by code (`GET /v1/task/findExtendedWithFlexField/code/{taskCode}`). The
+link form has no space select: Jaga's per-space search (`searchByTitleCode`) requires a `projectId`,
+the global one does not.
 
-  The mapping is by **status category**, not by status id. Jaga gives every workflow its own
-  copies of the statuses, so a single instance carries tens of thousands of them (~90k across
-  ~15k workflows on the one this was built against) — far too many for a dropdown, and an id
-  picked in one space is meaningless in another. What *is* stable is the category every status
-  belongs to (`categoryNameM`): **To do**, **In progress**, **Done**. So you map onto a
-  category once, for the whole organization, and the concrete status is resolved per task:
+With `ROOT_URLCONF` set (step 3 of the installation), the "Task" field is an autocomplete backed by
+the package's own endpoint (`/extensions/jaga/search/<org>/<integration_id>/`), which Sentry calls,
+debounced, as you type. Without it, the field re-fetches the whole form on every keystroke.
 
-  1. the task is read (`GET /v1/task/findExtendedWithFlexField/code/{taskCode}`) — it reports
-     both the space it lives in and the statuses its workflow can reach from where it stands
-     (`statusTransitions`);
-  2. the statuses of that space are listed
-     (`GET /v1/workflowStatusesAvail?projectId={spaceId}`, a handful — not the global ~90k);
-  3. the task is moved to the **first reachable** status in the chosen category.
+### The event attachment
 
-  If the workflow has no way into that category from the task's current status, the task is
-  **left alone** and a comment is posted instead (always — regardless of the comment setting),
-  with a `no_status_in_category` warning in the Sentry logs naming the task and the statuses it
-  could have reached. Nothing is forced: the task is never pushed into a status its workflow
-  does not allow.
+With the toggle on, the issue's latest event is serialized with `Event.as_dict()` and uploaded as
+`sentry-event-<event id>.json` (`POST /v1/attacher/file/create?projectId=…&taskId=…`, multipart).
 
-- **Assignee sync.** When a Sentry issue is assigned, the person is put on the linked task by
-  patching its assignee attribute (`PATCH /v1/task/{taskId}` with the `task.assignee_uuid` cell).
-  Unassigning writes an empty list, which is how Jaga is told "nobody".
+Before it is uploaded, the event goes through `sentry.relay.datascrubbing.scrub_data` — Sentry's own
+scrubber, the same Relay engine that cleans an event as it *arrives*. The file therefore honours
+every privacy setting of the project and the organization: IP scrubbing, additional sensitive
+fields, the default data-scrubber rules, and the advanced PII rules (`sentry:relay_pii_config`).
+What the scrubber does not remove still travels — by default that includes the user's email and the
+request body; if you need it gone, say so in the project's privacy settings.
 
-  Despite what the API spec suggests, the assignee is **not** a "task role": the documented
-  `PUT /v1/taskRole/task/{taskId}/executor` does not exist on a live instance — it answers 404
-  with `No static resource ...`, i.e. no handler at all. The assignee is an ordinary EAV
-  attribute, and writing it fills the task's `executors` as a consequence: it *is* what Jaga's
-  own UI shows as the executor.
+Because the rules are applied to the *stored* event, at export time, this is stricter than Sentry's
+own "JSON" view of an event, which shows events that were stored before a setting was turned on
+exactly as they were ingested. What comes back is Relay's canonical form, so it is not byte-for-byte
+the `as_dict()` that went in: null keys are dropped, `message` is folded into `logentry`, and a
+`_meta` block records what was scrubbed.
 
-  Sentry and Jaga are matched **by email**: the user's primary address is tried first, then their
-  verified ones, and the first that Jaga knows wins. The primary address leads on purpose —
-  Sentry's `RpcUser.emails` holds only *verified* addresses, and on a self-hosted Sentry with no
-  working SMTP nobody has any.
+The upload happens after the task is created, and a failure is logged and swallowed — the task
+exists by then. A failing *scrub*, on the other hand, means no attachment at all: it is fail-closed,
+and an unscrubbed event is never the fallback.
 
-  A Sentry user who does not exist in Jaga **leaves the task exactly as it was**. It is reported
-  to Sentry as a target that could not be found (and logged as `jaga.sync.assignee_not_in_jaga`),
-  and it is never turned into an unassignment: taking a real person off a real task because a
-  lookup missed would be the loudest possible way to lose data.
+The issue reaches the create through a hidden form field (`sentry_group_id`), because Sentry hands
+`create_issue()` the submitted form and nothing else. The field is only emitted when the form is
+opened from an issue — which is why alert rules get no attachment, see [Limitations](#limitations).
 
-  Assigning a Sentry issue to a **team** does nothing in Jaga. Sentry does not even queue the
-  outbound sync for a team — it only does so when the assignee is a user.
+### Status sync
 
-  Unlike the status sync, a Jaga failure here is **not** swallowed: Sentry retries the assignment
-  five times, and swallowing would throw the retry away *and* record an assignment that never
-  happened as a success.
+When a Sentry issue is resolved or reopened, the linked task is moved to another status
+(`POST /v1/task/updateTaskStatusAndFields`), and a comment is posted as well (`POST /v1/comment`) if
+you leave the comment option on.
 
-The issue ↔ task relation is held by Sentry's own models (`ExternalIssue` and `GroupLink`) —
-the package creates no tables of its own.
+**The mapping is by status category, not by status id.** Jaga gives every workflow its own copies of
+the statuses — ~90k across ~15k workflows on the instance this was built against — so an id picked
+in one space is meaningless in another. What is stable is the category every status belongs to
+(`categoryNameM`): To do, In progress, Done. You map onto a category once, and the concrete status
+is resolved per task:
+
+1. the task is read (`GET /v1/task/findExtendedWithFlexField/code/{taskCode}`) — it reports both the
+   space it lives in and the statuses its workflow can reach from where it stands
+   (`statusTransitions`);
+2. the statuses of that space are listed (`GET /v1/workflowStatusesAvail?projectId={spaceId}`);
+3. the task is moved to the first reachable status in the chosen category.
+
+If the workflow has no way into that category, the task is left alone and a comment is posted
+instead (always, regardless of the comment setting), with a `no_status_in_category` warning in the
+Sentry logs. The task is never pushed into a status its workflow does not allow.
+
+### Assignee sync
+
+When a Sentry issue is assigned, the person is put on the linked task by patching its assignee
+attribute (`PATCH /v1/task/{taskId}` with the `task.assignee_uuid` cell). Unassigning writes an
+empty list, which is how Jaga is told "nobody".
+
+**The assignee is an ordinary EAV attribute, not a "task role"**, whatever the API spec suggests:
+the documented `PUT /v1/taskRole/task/{taskId}/executor` does not exist on a live instance (404,
+`No static resource ...`). Writing the attribute fills the task's `executors` as a consequence — it
+*is* what Jaga's UI shows as the executor.
+
+Sentry and Jaga are matched by email: the user's primary address first, then their verified ones.
+The primary address leads because `RpcUser.emails` holds only *verified* addresses, and on a
+self-hosted Sentry with no working SMTP nobody has any.
+
+A Sentry user who does not exist in Jaga leaves the task exactly as it was: it is reported to Sentry
+as a target that could not be found (and logged as `jaga.sync.assignee_not_in_jaga`), never turned
+into an unassignment. Assigning an issue to a **team** does nothing in Jaga — Sentry does not queue
+the outbound sync for a team at all. Unlike the status sync, a Jaga failure here is not swallowed:
+Sentry retries the assignment, and swallowing would throw the retry away and record an assignment
+that never happened as a success.
+
+The issue ↔ task relation is held by Sentry's own models (`ExternalIssue` and `GroupLink`) — the
+package creates no tables of its own.
 
 ## Limitations
 
-- **Not every task field can be filled from Sentry.** Priority, version, parent, total
-  estimate, deadline, and the planned/actual work periods are left out of the create form:
-  Jaga exposes them as references or typed values with no endpoint to list them from, and a
-  free-text box over an id column would only produce values Jaga rejects. Create the task
-  from Sentry, then fill those fields in Jaga itself.
-
-  If a task type marks one of them as **required**, the create will fail with Jaga's own
-  message naming the field, and the plugin logs a `required_attribute_not_supported` warning
-  with its mnemonic. Either make the field optional in Jaga, or create such tasks by hand.
+- **Not every task field can be filled from Sentry.** Priority, version, parent, total estimate,
+  deadline, and the planned/actual work periods are left out of the create form: Jaga exposes them
+  with no endpoint to list their values from. Create the task from Sentry, then fill those fields in
+  Jaga. If a task type marks one of them as **required**, the create fails with Jaga's own message
+  and the plugin logs a `required_attribute_not_supported` warning.
 - **The event attachment does not work for tasks filed by an alert rule.** The rule modal renders
-  the create form with no issue behind it (Sentry calls `get_create_issue_config(None, …)` there)
-  and **saves whatever the form returns into the rule**. So the hidden field that carries the
-  issue is deliberately not emitted on that path: a group id saved into a rule would be frozen at
-  the moment the rule was written, and every task the rule ever filed afterwards would get the
-  event of that one long-dead issue attached to it. No field, no attachment — the honest outcome.
-  Tasks created from an issue by hand are unaffected.
-- **An alert rule whose assignee later leaves Jaga stops filing tasks.** A Ticket Rule saves the
-  create form it was written with, and the assignee is saved in it **as an email**. If that person
-  is later removed from Jaga, the email no longer resolves, and the rule fails to file a task at
-  all — rather than filing one without an assignee. It is logged (`jaga.issue.assignee_not_in_jaga`,
-  naming the address), but nobody is watching the rule, so nobody sees it. If you file tasks by
-  rule, either leave the rule's assignee empty or check it when someone leaves.
-- **A rule's saved form carries the email addresses of the space's members.** The assignee select
-  lists them as its choices, and Sentry stores a rule's rendered form fields on the `Rule` row —
-  so anyone who can open that rule in Sentry can read them. Nothing secret, but it is a list of
-  colleagues' addresses leaving Jaga and landing in Sentry.
-- **Only the members of a space can be assigned, and only if the service account can see them.**
-  The assignee select is filled from the space's user-role matrix
-  (`GET /v1/team/userRoles/applications/JAGA/projects/{projectId}`). If it comes up empty, the
-  service account cannot read that space's membership — check its rights in Jaga.
-
-  The documented endpoint for this, `GET /v1/project/getUserProfileDtos/{projectId}`, is **not**
-  used: on a live instance it answers `200 []` for every space, including one the asking account
-  owns. It does not fail — it silently reports that nobody is there, which is exactly how an
-  empty assignee dropdown with no error anywhere came about in the first place. It is still tried
-  as a fallback, but only when the matrix itself errors.
-- **The sync is one-way, Sentry → Jaga.** Inbound Jaga → Sentry webhooks are not supported:
-  changes made on the Jaga side do not reach Sentry. In particular, the assignee sync only ever
-  writes: someone reassigned in Jaga is not reassigned in Sentry.
-- **The link suggestions do not show which space a task is in.** They read `code — title` and no
-  more. Jaga's global search returns a found task's `projectId`, `projectCode` and `projectTitle`
-  as `null` — the space simply is not in the answer — and reading it back would mean one extra
-  request per suggestion, on every keystroke. The code prefix usually names the space anyway
-  (`PLT-500`), and the task's full card is one click away in Jaga once it is linked.
-- **The live search when linking needs one line of config.** Autocomplete requires an HTTP
-  endpoint, and Sentry offers an out-of-tree package no hook to add a route with. The package
-  ships one anyway, as a `ROOT_URLCONF` you can point Sentry at (step 3 of the installation).
-  Leave it out and the link form still works — it just searches by re-fetching the form as you
-  type, which is slower and chattier.
-- **Alert-rule actions do not reach Sentry's new workflow engine.** The rule works: it is in
-  Sentry's rule registry, it saves, and it fires. But Sentry is migrating issue alerts to a new
-  internal `Action` model, and that path is closed to out-of-tree integrations — its provider
-  list (`Action.Type`) and its translator table are hardcoded enums, with no `jaga` in them.
-  Saving a Jaga rule therefore logs one `Action translator not found` error, which is harmless
-  today (the legacy path is what executes) but will need upstream support if Sentry ever drops
-  it.
+  the create form with no issue behind it and saves whatever the form returns into the rule, so the
+  hidden field that carries the issue is deliberately not emitted there — a group id frozen into a
+  rule would attach one long-dead issue's event to every task the rule ever files. Tasks created
+  from an issue by hand are unaffected.
+- **An alert rule whose assignee later leaves Jaga stops filing tasks.** A rule saves the create form
+  it was written with, and the assignee is saved in it as an email; if that person is removed from
+  Jaga the email no longer resolves, and the rule fails rather than filing a task without an
+  assignee. It is logged (`jaga.issue.assignee_not_in_jaga`), but nobody is watching the rule. Leave
+  the rule's assignee empty, or check it when someone leaves.
+- **A rule's saved form carries the email addresses of the space's members.** They are the choices of
+  the assignee select, and Sentry stores a rule's rendered form fields on the `Rule` row — so anyone
+  who can open the rule can read them.
+- **Only the members of a space can be assigned, and only if the service account can see them.** The
+  assignee select is filled from the space's user-role matrix
+  (`GET /v1/team/userRoles/applications/JAGA/projects/{projectId}`), with `applicationMnemo=JAGA`.
+  If it comes up empty, the service account cannot read that space's membership — check its rights
+  in Jaga. The endpoint the spec documents for this, `GET /v1/project/getUserProfileDtos/{projectId}`,
+  is dead: it answers `200 []` for every space, including one the asking account owns. It is kept
+  only as a fallback for when the matrix itself errors.
+- **The sync is one-way, Sentry → Jaga.** Inbound webhooks are not supported: someone reassigned in
+  Jaga is not reassigned in Sentry.
+- **The link suggestions do not show which space a task is in.** They read `code — title`: Jaga's
+  global search returns a found task's `projectId`, `projectCode` and `projectTitle` as `null`, and
+  reading them back would cost one extra request per suggestion, per keystroke. The code prefix
+  usually names the space anyway (`PLT-500`).
+- **The live search when linking needs one line of config.** Autocomplete requires an HTTP endpoint,
+  and Sentry offers an out-of-tree package no hook to add a route with; the package ships a
+  `ROOT_URLCONF` you can point Sentry at (step 3 of the installation). Leave it out and the link
+  form still works, it just re-fetches the form as you type.
+- **Alert-rule actions do not reach Sentry's new workflow engine.** The rule registers, saves and
+  fires on the legacy path. But Sentry's new internal `Action` model is closed to out-of-tree
+  integrations — its provider list and translator table are hardcoded enums with no `jaga` in them —
+  so saving a Jaga rule logs one harmless `Action translator not found` error, which will need
+  upstream support if Sentry ever drops the legacy path.
 
 ## Development
 
@@ -364,9 +291,8 @@ uv run ruff check . && uv run mypy
 ```
 
 The tests in `tests/integration/` exercise the integration against a real Sentry. They skip
-themselves here, and cannot run in this environment at all: Sentry is **not installable as a
-package** (not on PyPI above 23.7.1, and its source tree has no build backend). They run inside
-Sentry's own environment instead — four containers and a checkout of the tag, see
+themselves here: Sentry is **not installable as a package** (not on PyPI above 23.7.1, and its
+source tree has no build backend), so they run inside Sentry's own environment — see
 [CONTRIBUTING.md](CONTRIBUTING.md#tests-of-the-sentry-layer).
 
 How to submit changes: see [CONTRIBUTING.md](CONTRIBUTING.md).

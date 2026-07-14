@@ -33,12 +33,10 @@ def verify_credentials(instance_url: str, email: str, password: str) -> None:
 
 
 class InstallationForm(forms.Form):
-    # `assume_scheme="https"` is not cosmetic: on Django 5.x (which is what Sentry 26.3.1
-    # ships) a URLField without this argument completes a schemeless address to `http://`,
-    # and Sentry does not set FORMS_URLFIELD_ASSUME_HTTPS. An admin types
-    # `jaga.example.com` — and the service account password goes out for verification in
-    # plain text, while the http address settles into `Integration.metadata` forever. The
-    # argument works on Django 6.x too.
+    # `assume_scheme="https"` is not cosmetic: on Django 5.x a URLField without it completes a
+    # schemeless address to `http://`, and Sentry does not set FORMS_URLFIELD_ASSUME_HTTPS. An admin
+    # types `jaga.example.com`, and the service account password goes out in plain text while the
+    # http address settles into `Integration.metadata` forever.
     instance_url = forms.URLField(
         label="Jaga URL",
         assume_scheme="https",
@@ -79,17 +77,15 @@ class InstallationForm(forms.Form):
 class InstallationConfigView:
     """The only installation step: a form with the URL and the credentials."""
 
-    # The only part of this module that cannot be covered: the method exists solely inside
-    # the Sentry runtime — it needs `render_to_response` and a real `IntegrationPipeline`,
-    # neither of which exists in the unit test run. It holds no logic of its own: every
-    # testable part lives in `InstallationForm` and `verify_credentials`, which are covered.
+    # Not coverable: it needs `render_to_response` and a real `IntegrationPipeline`, neither of
+    # which exists in the unit run. It holds no logic of its own — that lives in `InstallationForm`
+    # and `verify_credentials`, which are covered.
     def dispatch(  # pragma: no cover
         self,
         request: HttpRequest,
         pipeline: IntegrationPipeline,
     ) -> HttpResponseBase:
-        # Deferred import: the form and verify_credentials must be importable without
-        # sentry installed (their unit tests depend only on django).
+        # Deferred import: the form and `verify_credentials` must be importable without sentry.
         from sentry.web.helpers import render_to_response
 
         if request.method == "POST":

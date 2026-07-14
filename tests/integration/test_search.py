@@ -1,9 +1,8 @@
 """The task-search endpoint and the two shapes of the link form, against a real Sentry.
 
-The endpoint only exists when the admin has pointed `ROOT_URLCONF` at `sentry_jaga.urlconf`
-(see `urlconf.py`), so these tests do the same thing an admin would, with `override_settings`.
-That is also what makes the degradation test honest: it asserts the fallback under Sentry's own
-urlconf, where the route genuinely is not registered.
+The endpoint only exists when the admin has pointed `ROOT_URLCONF` at `sentry_jaga.urlconf`, so
+these tests do the same with `override_settings` — and the degradation test asserts the fallback
+under Sentry's own urlconf, where the route genuinely is not registered.
 """
 
 import pytest
@@ -31,8 +30,8 @@ AUTH_OK = {
     "email": "bot@example.com",
     "fullName": "Bot",
 }
-# The global search, exactly as a live instance answers it: a page OBJECT (the spec claims an
-# array), a title that lives in the EAV `attributes`, and a space that comes back null.
+# The global search as a live instance answers it: a page OBJECT (the spec claims an array), a
+# title that lives in the EAV `attributes`, and a space that comes back null.
 SEARCH_RESULT = {
     "content": [
         {
@@ -76,8 +75,8 @@ class JagaSearchEndpointTest(APITestCase):
         return url
 
     def test_the_route_only_exists_under_our_urlconf(self) -> None:
-        """Sentry's own urlconf knows nothing of it — that is exactly why the link form has to
-        degrade gracefully."""
+        """Sentry's own urlconf knows nothing of it, which is why the link form has to degrade
+        gracefully."""
         from django.urls import NoReverseMatch
 
         assert "/extensions/jaga/search/" in self._url()
@@ -87,8 +86,8 @@ class JagaSearchEndpointTest(APITestCase):
 
     @responses.activate
     def test_it_searches_every_space_and_returns_pairs_the_frontend_understands(self) -> None:
-        """No space is sent, and none is needed: the endpoint used to demand a `project` because
-        Jaga's per-space search wants a `projectId`. The global search does not."""
+        """No space is sent, and none is needed: Jaga's per-space search wants a `projectId`, the
+        global search does not."""
         responses.add(responses.POST, f"{API}/v1/auth/login", json=AUTH_OK, status=200)
         responses.add(responses.POST, f"{API}/v1/globalSearch/findTaskList", json=SEARCH_RESULT)
 
@@ -106,8 +105,8 @@ class JagaSearchEndpointTest(APITestCase):
 
     @responses.activate
     def test_a_short_query_is_not_an_error_and_does_not_reach_jaga(self) -> None:
-        """The frontend fires once with an empty input when the field mounts, and again on the
-        first keystroke. Neither is worth an HTTP call to Jaga."""
+        """The frontend fires once when the field mounts and again on the first keystroke, and
+        neither is worth an HTTP call to Jaga."""
         responses.add(responses.POST, f"{API}/v1/auth/login", json=AUTH_OK, status=200)
         responses.add(responses.POST, f"{API}/v1/globalSearch/findTaskList", json=SEARCH_RESULT)
 
@@ -135,9 +134,9 @@ class JagaSearchEndpointTest(APITestCase):
 
 
 class JagaLinkFormShapeTest(APITestCase):
-    """`get_link_issue_config` must produce an async select when the route is installed, and the
-    old `updatesForm` search when it is not. The branch is decided by a `reverse()` that either
-    resolves or raises — so it can only be tested for real by swapping the urlconf."""
+    """`get_link_issue_config` produces an async select when the route is installed and the old
+    `updatesForm` search when it is not; the branch is a `reverse()` that either resolves or
+    raises, so only swapping the urlconf tests it for real."""
 
     def setUp(self) -> None:
         super().setUp()
@@ -188,8 +187,8 @@ class JagaLinkFormShapeTest(APITestCase):
 
     @responses.activate
     def test_neither_shape_of_the_link_form_asks_for_a_space(self) -> None:
-        """The point of the whole change: you type, and the task is found wherever it lives. The
-        space select is gone — and with it the list of spaces the form used to fetch to build it."""
+        """You type and the task is found wherever it lives: the space select is gone, and with it
+        the list of spaces the form used to fetch to build it."""
         self._mock_jaga()
 
         with override_settings(ROOT_URLCONF=URLCONF):

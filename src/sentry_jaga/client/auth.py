@@ -12,11 +12,10 @@ DEFAULT_LEEWAY_SECONDS = 30
 
 
 class Cache(Protocol):
-    """Minimal cache contract (compatible with the Django cache).
+    """Minimal cache contract, injected from outside (the core knows nothing about Django).
 
-    Injected from the outside — the core knows nothing about Django. It stores both the
-    access token and short-lived reference data (the list of spaces), so a value is a
-    `dict[str, Any]` rather than just the string fields of a token.
+    A value is a `dict[str, Any]`, not just a token's string fields, because the same cache also
+    holds short-lived reference data such as the list of spaces.
     """
 
     def get(self, key: str) -> dict[str, Any] | None: ...
@@ -66,8 +65,7 @@ class TokenManager:
             token = self._store(self._login())
         if not token.is_expired(self._leeway):
             return token.access_token
-        # The token is about to expire: try a refresh and fall back to a full re-login
-        # on any failure.
+        # About to expire: try a refresh, fall back to a full re-login on any failure.
         try:
             refreshed = self._refresh(token.refresh_token)
         except Exception:

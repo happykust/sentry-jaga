@@ -14,17 +14,13 @@ from sentry.testutils.skips import requires_snuba
 
 from sentry_jaga.issue_config import GROUP_ID_FIELD
 
-# The create form reads the issue's latest event (to pre-fill the description, and — with the
-# toggle on — to attach it), and an event comes from Snuba.
+# The create form reads the issue's latest event, and an event comes from Snuba.
 pytestmark = [requires_snuba]
 
-# The IP address of the user the event was captured from — the thing `sentry:scrub_ip_address`
-# exists to keep out of Sentry, and therefore out of Jaga.
 CUSTOMER_IP = "203.0.113.7"
-# A field an admin has named in `sentry:sensitive_fields`, and one nobody named. Both are
-# deliberately meaningless to Sentry's DEFAULT rules (which already catch `password`, `token`,
-# `authorization` and friends): only a custom setting can tell the two apart, so a test built on
-# them proves that the custom setting is honoured — not that the defaults happen to fire.
+# A field an admin named in `sentry:sensitive_fields`, and one nobody named. Both are deliberately
+# meaningless to Sentry's DEFAULT rules, so a green test proves the custom setting is honoured
+# rather than the defaults happening to fire.
 SECRET_FIELD = "internal_customer_ref"
 KEPT_FIELD = "widget_count"
 
@@ -38,9 +34,8 @@ AUTH_OK = {
     "email": "bot@example.com",
     "fullName": "Bot",
 }
-# The attributes of a real Jaga task type: the space and the type are declared as required
-# attributes even though both ids are already in the create URL, and Jaga refuses a create
-# that leaves them out of `attributes`.
+# The attributes of a real Jaga task type: the space and the type are required attributes even
+# though both ids are already in the create URL, and Jaga refuses a create that omits them.
 ATTRS_RESPONSE = {
     "id": 10,
     "typeName": "Bug",
@@ -89,10 +84,9 @@ ATTRS_RESPONSE = {
         }
     ],
 }
-# The members of a space come from the user-role matrix, NOT from the documented
-# `getUserProfileDtos` — that one answers 200 with `[]` for every space on a live instance, which
-# is what used to leave the assignee select silently empty. The matrix carries no person UUID, so
-# the select's value is the email and the UUID is resolved at submit time (`PERSON_RESPONSE`).
+# The members of a space come from the user-role matrix, not from `getUserProfileDtos` (which
+# answers `200 []` for every space on a live instance). The matrix carries no person UUID, so the
+# select's value is the email and the UUID is resolved at submit time (`PERSON_RESPONSE`).
 MATRIX_RESPONSE = {
     "content": [
         {
@@ -100,7 +94,7 @@ MATRIX_RESPONSE = {
             "usersRoles": [
                 {
                     "user": {
-                        # The TEAM id, despite the name. The Core id is a different number.
+                        # The TEAM id, despite the name.
                         "id": 365474,
                         "displayName": "Ivanov Ivan",
                         "email": "ivanov@example.com",
@@ -153,10 +147,9 @@ CREATED_TASK = {
 class JagaIssuesTest(APITestCase):
     def setUp(self) -> None:
         super().setUp()
-        # `Integration`/`OrganizationIntegration` are control-silo models; the test runs in the
-        # default CELL mode, so writing them needs the control silo explicitly. The installation
-        # itself is then used from the region silo — which is exactly where Sentry calls it from
-        # in production (the issue-linking endpoints live on the region silo).
+        # `Integration`/`OrganizationIntegration` are control-silo models, so writing them from the
+        # default CELL mode needs the control silo explicitly. The installation is then used from
+        # the region silo — which is where Sentry calls it from in production.
         with assume_test_silo_mode(SiloMode.CONTROL):
             self.integration = self.create_provider_integration(
                 provider="jaga",
@@ -265,7 +258,7 @@ class JagaIssuesTest(APITestCase):
 
         # 104 is the label every task from Sentry carries (see the auto-label tests below).
         assert sorted(by_field) == [90, 91, 100, 101, 104, 110]
-        # Jaga answers 500 without these two, even though both ids are in the URL.
+        # Jaga answers 500 without these two, even though both ids are already in the URL.
         assert by_field[90] == {
             "fieldId": 90,
             "value": 1,
@@ -283,9 +276,8 @@ class JagaIssuesTest(APITestCase):
 
     @responses.activate
     def test_the_create_form_carries_the_issue_in_a_hidden_field(self) -> None:
-        """`create_issue` is handed the submitted form and nothing else — no group, no event.
-        The hidden field is the only way the issue can reach it; Sentry's frontend renders it as
-        `display: none` and submits its default with the rest of the form."""
+        """`create_issue` is handed the submitted form and nothing else — no group, no event — so
+        the hidden field is the only way the issue can reach it."""
         self._mock_base()
         responses.add(
             responses.GET, f"{API}/v1/project/1/taskType", json=[{"id": 10, "typeName": "Bug"}]
@@ -303,15 +295,9 @@ class JagaIssuesTest(APITestCase):
 
     @responses.activate
     def test_the_form_an_alert_rule_saves_carries_no_issue(self) -> None:
-        """The guard against a stale event, and the reason the attachment cannot work for alert
-        rules.
-
-        This is the exact call the ticket-rule modal makes — `get_create_issue_config(None, user)`
-        (see `IntegrationSerializer`: 'Query param "action" only attached in TicketRuleForm
-        modal') — and whatever comes back is SAVED INTO THE RULE. A group id in there would be
-        frozen at the moment the rule was written, and every task the rule ever filed afterwards
-        would carry the event of that one long-dead issue. So: no group, no field.
-        """
+        """The ticket-rule modal calls `get_create_issue_config(None, user)` and SAVES what comes
+        back into the rule: a group id in there would be frozen at write time, attaching one
+        long-dead event to every task the rule ever files."""
         self._mock_base()
         responses.add(
             responses.GET, f"{API}/v1/project/1/taskType", json=[{"id": 10, "typeName": "Bug"}]
@@ -324,15 +310,13 @@ class JagaIssuesTest(APITestCase):
 
     # --- the label every task filed from Sentry carries -------------------------------------
     #
-    # The name comes from the organization's config, which only the Sentry layer can read; the
-    # merge itself is the core's, and the unit tests own it. What these prove is the wiring: the
-    # default before anything was ever saved, and the empty string as the off switch.
+    # The merge itself belongs to the core and the unit tests own it. What these prove is the
+    # wiring: the default before anything was saved, and the empty string as the off switch.
 
     @responses.activate
     def test_a_task_is_labelled_before_the_organization_configures_anything(self) -> None:
-        """`config` is {} until an admin opens the settings page and saves. The label must be on
-        anyway — and on the *same* name the settings page renders as its default, or the first
-        Save would silently change the behaviour without anybody touching the box."""
+        """`config` is {} until an admin saves, so the label must be on anyway — and on the SAME
+        name the settings page renders, or the first Save would silently change the behaviour."""
         self._mock_base()
         self._mock_attributes()
         self._mock_create()
@@ -415,7 +399,7 @@ class JagaIssuesTest(APITestCase):
                     {
                         "id": 5,
                         "code": "PLT-5",
-                        # The live instance returns the space of a found task as null.
+                        # The live instance returns a found task's space as null.
                         "projectId": None,
                         "attributes": [
                             {
@@ -444,10 +428,8 @@ class JagaIssuesTest(APITestCase):
 
     # --- remembering the last space and task type ------------------------------------------
     #
-    # This is the half of the feature that only a real Sentry can prove: `store_issue_last_defaults`
-    # is Sentry's, it writes to `OrganizationIntegration.config` through a control-silo RPC, and
-    # `get_defaults` reads it back. The unit tests cover what the core does with the values; these
-    # cover that the values make the round trip at all.
+    # The unit tests cover what the core does with the remembered values; these cover that the
+    # values make the round trip through Sentry's own persistence at all.
 
     @staticmethod
     def _mock_two_spaces() -> None:
@@ -484,14 +466,14 @@ class JagaIssuesTest(APITestCase):
             "project",
             "issue_type",
         ]
-        # No per-user defaults: every field of our create form describes the task, not the person
-        # filing it, so a team wants them to agree rather than to differ per member.
+        # No per-user defaults: every field of the create form describes the task, not the person
+        # filing it, so a team wants them to agree rather than differ per member.
         assert list(self.installation.get_persisted_user_default_config_fields()) == []
 
     @responses.activate
     def test_the_create_form_reopens_on_the_space_last_filed_into(self) -> None:
-        """The feature, end to end through Sentry's own persistence: a team that filed its last
-        task into Billing/Incident gets Billing/Incident again — not the first space in the list."""
+        """A team that filed its last task into Billing/Incident gets Billing/Incident again, not
+        the first space in the list."""
         self._mock_two_spaces()
 
         self.installation.store_issue_last_defaults(
@@ -507,9 +489,8 @@ class JagaIssuesTest(APITestCase):
 
     @responses.activate
     def test_only_the_persisted_fields_are_stored(self) -> None:
-        """`store_issue_last_defaults` filters the submitted form by
-        `get_persisted_default_config_fields`. The task title of the last issue must not be
-        remembered — it belongs to that issue, not to the project."""
+        """The title of the last issue belongs to that issue, not to the project, and must not be
+        remembered."""
         self._mock_two_spaces()
 
         self.installation.store_issue_last_defaults(
@@ -525,9 +506,9 @@ class JagaIssuesTest(APITestCase):
 
     @responses.activate
     def test_a_remembered_space_the_account_lost_access_to_does_not_break_the_form(self) -> None:
-        """The failure the persistence makes possible: the remembered space is no longer among
-        the ones Jaga offers this service account. The form must still open, on a space that
-        exists — and it must not ask Jaga about the space that is gone."""
+        """The remembered space is no longer among the ones Jaga offers this service account: the
+        form must still open on a space that exists, and must not ask Jaga about the one that is
+        gone."""
         self._mock_two_spaces()
 
         self.installation.store_issue_last_defaults(
@@ -555,10 +536,8 @@ class JagaIssuesTest(APITestCase):
 
     @responses.activate
     def test_after_link_issue_comments_on_the_task(self) -> None:
-        """`after_link_issue` is handed the submitted form and nothing else — no group, no URL.
-        The Sentry link reaches Jaga because it was baked into the comment field's default at
-        render time. The task id comes from `ExternalIssue.metadata`, so the task the endpoint
-        has just fetched is not fetched a second time."""
+        """`after_link_issue` is handed the submitted form and nothing else, so the Sentry link
+        reaches Jaga only because it was baked into the comment field's default at render time."""
         responses.add(responses.POST, f"{API}/v1/auth/login", json=AUTH_OK, status=200)
         responses.add(responses.POST, f"{API}/v1/comment", json={"id": 42, "taskId": 500})
         external_issue = ExternalIssue.objects.create(
@@ -584,7 +563,7 @@ class JagaIssuesTest(APITestCase):
 
     @responses.activate
     def test_after_link_issue_posts_nothing_when_the_comment_is_cleared(self) -> None:
-        """Clearing the comment box is how a user declines the comment — that is why the feature
+        """Clearing the comment box is how a user declines the comment, which is why the feature
         needs no organization-wide toggle."""
         external_issue = ExternalIssue.objects.create(
             organization_id=self.organization.id,
@@ -602,9 +581,8 @@ class JagaIssuesTest(APITestCase):
 
     @responses.activate
     def test_a_failing_comment_does_not_lose_the_link(self) -> None:
-        """The endpoint creates the `ExternalIssue` before this runs and the `GroupLink` after it.
-        An exception here would therefore not merely lose the comment — it would lose the link the
-        user asked for and orphan the `ExternalIssue`. Jaga being down must not cost the link."""
+        """The `GroupLink` is created after this runs, so an exception here would lose the link the
+        user asked for and orphan the `ExternalIssue` — not merely lose the comment."""
         responses.add(responses.POST, f"{API}/v1/auth/login", json=AUTH_OK, status=200)
         responses.add(responses.POST, f"{API}/v1/comment", json={"message": "boom"}, status=500)
         external_issue = ExternalIssue.objects.create(
@@ -618,11 +596,8 @@ class JagaIssuesTest(APITestCase):
 
 
 class JagaEventAttachmentTest(APITestCase):
-    """Attaching the Sentry event to the task, behind the organization's toggle.
-
-    Only a real Sentry can hold this half up: the event comes out of Snuba and nodestore, and
-    `create_issue` has to find the group by an id that travelled through the browser.
-    """
+    """Attaching the Sentry event to the task, behind the organization's toggle: the event comes
+    out of Snuba and nodestore, and `create_issue` finds the group by an id from the browser."""
 
     def setUp(self) -> None:
         super().setUp()
@@ -641,16 +616,14 @@ class JagaEventAttachmentTest(APITestCase):
                 "event_id": "a" * 32,
                 "message": "Login is broken",
                 "timestamp": before_now(minutes=1).isoformat(),
-                # Everything the toggle exists for: an event is full of personal data, and it
-                # holds the same IP address in four different places.
+                # The same IP address in four different places — everything the toggle exists for.
                 "user": {"email": "customer@example.com", "ip_address": CUSTOMER_IP},
                 "request": {
                     "url": "http://app.example.com/login",
                     "method": "POST",
                     "env": {"REMOTE_ADDR": CUSTOMER_IP},
                     "headers": [["X-Forwarded-For", CUSTOMER_IP], ["User-Agent", "curl"]],
-                    # `SECRET_FIELD` is what an admin would name in `sentry:sensitive_fields`;
-                    # `KEPT_FIELD` is the control — nothing must touch it.
+                    # `KEPT_FIELD` is the control: nothing must touch it.
                     "data": {SECRET_FIELD: "s3kr1t", KEPT_FIELD: "hello"},
                 },
                 "spans": [
@@ -715,9 +688,8 @@ class JagaEventAttachmentTest(APITestCase):
 
     @responses.activate
     def test_nothing_is_attached_until_an_admin_turns_it_on(self) -> None:
-        """Off by default, and the default has to be the one an untouched `config` behaves as:
-        an event is full of personal data, and the Jaga task may have a wider audience than the
-        Sentry issue."""
+        """Off by default, and the rendered default must be the one an untouched `config` behaves
+        as: the Jaga task may have a wider audience than the Sentry issue."""
         self._mock_jaga()
 
         assert self.installation.org_integration.config == {}
@@ -744,28 +716,19 @@ class JagaEventAttachmentTest(APITestCase):
         body = bytes(upload.request.body)
         assert b'filename="sentry-event-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json"' in body
         assert b"Content-Type: application/json" in body
-        # The file really is the event, as Sentry itself serves it behind the JSON link on an
-        # event page (`EventJsonEndpoint` -> `event.as_dict()`)...
+        # The file really is the event Sentry serves behind the JSON link on an event page...
         assert b'"event_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' in body
-        # ...personal data and all. This is precisely why the toggle is off by default.
+        # ...personal data and all, which is precisely why the toggle is off by default.
         assert b"customer@example.com" in body
 
     # --- the project's privacy settings -----------------------------------------------------
     #
-    # The attachment goes through `sentry.relay.datascrubbing.scrub_data` — Sentry's OWN scrubber,
-    # the same Relay engine, and the same rules, that clean an event as it comes into Sentry. So
-    # the file honours every privacy setting of the project and the organization: the IP scrubbing,
-    # the sensitive fields, the default rules, and the PII config an admin wrote by hand. Scrubbing
-    # of our own could only ever cover the fields we happened to think of.
+    # The attachment goes through `sentry.relay.datascrubbing.scrub_data` — Sentry's OWN scrubber
+    # — so the file honours every privacy setting of the project and the organization for free.
     #
-    # It runs against the STORED event, which makes it stricter than Sentry's own JSON page for
-    # free: Relay only ever cleaned events that arrived *after* a setting was turned on, and the
-    # page still shows the addresses in the older ones.
-    #
-    # Note what the harness does NOT do: `store_event` goes through EventManager, not Relay, so
-    # nothing is scrubbed at ingest here whatever the settings say. The fixture therefore always
-    # carries the secrets in full — anything missing from the upload was taken out on the way out,
-    # and the "nothing configured" test below proves the fixture is not simply empty.
+    # `store_event` goes through EventManager, not Relay, so nothing is scrubbed at ingest here
+    # whatever the settings say: the fixture always carries the secrets in full, and anything
+    # missing from the upload was taken out on the way out.
 
     @responses.activate
     def test_the_ips_are_scrubbed_when_the_project_asks_for_it(self) -> None:
@@ -780,9 +743,7 @@ class JagaEventAttachmentTest(APITestCase):
         assert event["user"]["ip_address"] is None
         assert event["request"]["env"]["REMOTE_ADDR"] is None
         assert event["request"]["headers"] == [["X-Forwarded-For", "[ip]"], ["User-Agent", "curl"]]
-        # Sentry's scrubber NULLS an address field and rewrites an address embedded in a longer
-        # string. (`EventJsonEndpoint` deletes the `user.ip` key instead of nulling it — same
-        # effect, and the scrubber's own form is the one to follow.)
+        # Sentry's scrubber NULLS an address field and rewrites one embedded in a longer string.
         assert self._uploaded_span_tags() == {
             "transaction": "GET /login",
             "user": "ip:[ip]",
@@ -792,14 +753,14 @@ class JagaEventAttachmentTest(APITestCase):
         # Not one of them survives anywhere in the file — headers and span tags included.
         assert CUSTOMER_IP.encode() not in bytes(self._uploads()[0].request.body)
 
-        # The setting is about IP addresses and nothing else: the email still travels. That is the
-        # whole reason this attachment is off by default.
+        # The setting is about IP addresses and nothing else: the email still travels, which is why
+        # the attachment is off by default.
         assert event["user"]["email"] == "customer@example.com"
 
     @responses.activate
     def test_the_ips_are_scrubbed_when_the_organization_requires_it(self) -> None:
-        """The organization-wide setting overrules the project, and must be honoured too — which
-        it is, for free, because the rules come from Sentry's own scrubber."""
+        """The organization-wide setting overrules the project, and is honoured for free because
+        the rules come from Sentry's own scrubber."""
         self._mock_jaga()
         self.installation.update_organization_config({"attach_event": True})
         self.organization.update_option("sentry:require_scrub_ip_address", True)
@@ -811,13 +772,8 @@ class JagaEventAttachmentTest(APITestCase):
 
     @responses.activate
     def test_a_sensitive_field_the_admin_named_is_scrubbed(self) -> None:
-        """The gap that hand-written scrubbing left wide open, and the reason this now goes through
-        Sentry's scrubber: an admin who told Sentry to strip a field must not find it in plain text
-        on a Jaga task, in a tracker with a wider audience than the Sentry issue.
-
-        The field is deliberately one Sentry's DEFAULT rules know nothing about, so a green test
-        here is the admin's own setting being honoured — not the defaults happening to fire.
-        """
+        """An admin who told Sentry to strip a field must not find it in plain text on a Jaga task,
+        in a tracker with a wider audience than the Sentry issue."""
         self._mock_jaga()
         self.installation.update_organization_config({"attach_event": True})
         self.project.update_option("sentry:sensitive_fields", [SECRET_FIELD])
@@ -833,9 +789,9 @@ class JagaEventAttachmentTest(APITestCase):
 
     @responses.activate
     def test_nothing_is_scrubbed_that_the_project_did_not_ask_for(self) -> None:
-        """The control, and the one that makes the three tests above mean something: with nothing
-        configured, every secret is in the file — so a green test above is the scrubber working,
-        not an empty fixture."""
+        """The control that makes the three tests above mean something: with nothing configured
+        every secret is in the file, so a green test above is the scrubber, not an empty
+        fixture."""
         self._mock_jaga()
         self.installation.update_organization_config({"attach_event": True})
 
@@ -854,10 +810,9 @@ class JagaEventAttachmentTest(APITestCase):
 
     @responses.activate
     def test_a_task_filed_by_an_alert_rule_gets_no_attachment(self) -> None:
-        """The rule's saved form has no `sentry_group_id` — `get_create_issue_config` emits none
-        without a group — so there is no issue to take an event from. That is the honest outcome:
-        the alternative would have been a group id frozen into the rule, attaching one stale event
-        to every task the rule ever filed."""
+        """The rule's saved form has no `sentry_group_id`, so there is no issue to take an event
+        from — the alternative being a group id frozen into the rule, attaching one stale event to
+        every task it ever files."""
         self._mock_jaga()
         self.installation.update_organization_config({"attach_event": True})
 
@@ -872,13 +827,9 @@ class JagaEventAttachmentTest(APITestCase):
 
     @responses.activate
     def test_a_group_of_another_organization_is_not_attached(self) -> None:
-        """The group id arrives in a hidden field — that is, from the browser. Unscoped, a
-        hand-edited request would pull the latest event of any group on the instance, out of
-        another customer's project, and file it onto a Jaga task.
-
-        The other organization's issue is given a real event ON PURPOSE: an issue with no event
-        attaches nothing anyway, and a test built on one would pass with the scoping deleted.
-        """
+        """The group id arrives from the browser, so unscoped, a hand-edited request would file
+        another customer's event onto a Jaga task; the other org's issue is given a real event ON
+        PURPOSE, since a test built on an eventless one would pass with the scoping deleted."""
         self._mock_jaga()
         self.installation.update_organization_config({"attach_event": True})
 
@@ -903,9 +854,8 @@ class JagaEventAttachmentTest(APITestCase):
 
     @responses.activate
     def test_a_failing_upload_does_not_lose_the_task(self) -> None:
-        """The task is already created by the time the upload runs, and the caller is about to
-        link it to the Sentry issue. Raising here would fail a create that in fact succeeded —
-        and orphan the task in Jaga — over a file nobody may even have noticed was coming."""
+        """The task is already created by the time the upload runs, so raising here would fail a
+        create that in fact succeeded, and orphan the task in Jaga."""
         self._mock_jaga(attachment_status=500)
         self.installation.update_organization_config({"attach_event": True})
 
