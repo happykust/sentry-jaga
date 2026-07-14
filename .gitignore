@@ -96,6 +96,9 @@ fabric.properties
 # exists; git history keeps the rest.
 /docs/superpowers/
 
+# The release runbook is the maintainer's own note, not part of the published project.
+/docs/release.md
+
 # Editor and rebase leftovers. These matter more than they look: `[tool.hatch.build.targets.wheel]`
 # ships everything under `src/sentry_jaga`, so a `.bak` sitting next to a module gets published to
 # PyPI inside the wheel. It has happened here already.

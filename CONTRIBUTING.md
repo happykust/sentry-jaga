@@ -241,4 +241,7 @@ the only check on them that runs on every PR.
 
 ## Release
 
-See [docs/release.md](docs/release.md).
+Releases are cut by the maintainer: pushing a `v*` tag triggers `.github/workflows/release.yml`,
+which builds the distributions and publishes them to PyPI through trusted publishing (OIDC — no
+tokens are stored in this repository). Contributors do not need to do anything for a release; just
+add your entry to the `[Unreleased]` section of `CHANGELOG.md`.
