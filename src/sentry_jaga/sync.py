@@ -16,9 +16,26 @@ from sentry_jaga.issues import JagaIssuesMixin
 
 logger = logging.getLogger("sentry_jaga.sync")
 
+# Hardcoded on purpose — these are NOT fetched from Jaga.
+#
+# The settings page must render whether or not Jaga is reachable: an organization whose Jaga
+# is down (or whose service-account password has just expired) still has to be able to open
+# its integration settings — if only to turn the sync off. Sourcing the choices over HTTP
+# would make this page fail exactly when it is needed most.
+#
+# Hardcoding costs nothing here, because the values are not per-instance data: they are the
+# three categories Jaga groups every one of its statuses under, the same on every deployment.
+# The concrete status ids behind them ARE per-space, and those are resolved at sync time
+# against the task's own workflow (`issue_config.resolve_target_status`).
+CATEGORY_CHOICES = [
+    (issue_config.CATEGORY_DONE, "Done"),
+    (issue_config.CATEGORY_IN_PROGRESS, "In progress"),
+    (issue_config.CATEGORY_TODO, "To do"),
+]
+
 
 class JagaSyncMixin(JagaIssuesMixin, IssueSyncIntegration):
-    """Comments on the Jaga task whenever the Sentry issue changes status."""
+    """Moves (and comments on) the Jaga task whenever the Sentry issue changes status."""
 
     outbound_status_key = "sync_status_forward"
     # Assignee sync and inbound sync (Jaga -> Sentry webhooks) are not supported in this
@@ -34,10 +51,10 @@ class JagaSyncMixin(JagaIssuesMixin, IssueSyncIntegration):
         return bool(config.get("sync_status_forward", True))
 
     def get_organization_config(self) -> Sequence[Any]:
-        # `default` is mandatory: before the first save, `get_config_data()` returns {}, and
-        # without it the checkbox would render as off even though the sync is in fact on
-        # (see `should_sync`). The very first "Save" would then send false and silently kill
-        # the sync.
+        # Every `default` here is mandatory, and each one must match what `sync_status_outbound`
+        # falls back to below. Before the first save, `get_config_data()` returns {}: without a
+        # default the checkbox would render as off while the sync is in fact on (see
+        # `should_sync`), and the very first "Save" would send false and silently kill it.
         return [
             {
                 "name": "sync_status_forward",
@@ -46,17 +63,61 @@ class JagaSyncMixin(JagaIssuesMixin, IssueSyncIntegration):
                 "help": "Reflect resolving and reopening a Sentry issue in the linked Jaga task.",
                 "default": True,
             },
+            {
+                "name": "resolved_status_category",
+                "type": "select",
+                "label": "Status to move the task to when the Sentry issue is resolved",
+                "help": (
+                    "Jaga groups every status under one of these categories. The task is moved "
+                    "to the first status of the chosen category its workflow can actually reach "
+                    "from where it stands; if there is none, a comment is posted instead."
+                ),
+                "choices": CATEGORY_CHOICES,
+                "default": issue_config.CATEGORY_DONE,
+            },
+            {
+                "name": "unresolved_status_category",
+                "type": "select",
+                "label": "Status to move the task to when the Sentry issue is reopened",
+                "help": "Applied when a resolved issue regresses and the error happens again.",
+                "choices": CATEGORY_CHOICES,
+                "default": issue_config.CATEGORY_TODO,
+            },
+            {
+                "name": "comment_on_status_change",
+                "type": "boolean",
+                "label": "Also comment on the task",
+                "help": (
+                    "Post a comment on the Jaga task in addition to moving it. A comment is "
+                    "posted regardless whenever the task cannot be moved."
+                ),
+                "default": True,
+            },
         ]
 
     def sync_status_outbound(
         self, external_issue: ExternalIssue, is_resolved: bool, project_id: int
     ) -> None:
-        client = self.get_client()
+        config = self.org_integration.config if self.org_integration else {}
         try:
-            task_id = issue_config.resolve_task_id(
-                client, external_issue.key, external_issue.metadata
+            result = issue_config.apply_status_sync(
+                self.get_client(),
+                external_issue.key,
+                is_resolved=is_resolved,
+                # The fallbacks repeat the field defaults above, and must keep doing so: an
+                # organization that installed the integration and never opened its settings has
+                # an empty `config`, and the sync still has to know where to move a task.
+                resolved_category=str(
+                    config.get("resolved_status_category") or issue_config.CATEGORY_DONE
+                ),
+                unresolved_category=str(
+                    config.get("unresolved_status_category") or issue_config.CATEGORY_TODO
+                ),
+                post_comment=bool(config.get("comment_on_status_change", True)),
             )
-            client.create_comment(task_id, issue_config.status_comment(is_resolved))
+            logger.info(
+                "jaga.sync.status_outbound", extra={"key": external_issue.key, "result": result}
+            )
         except JagaError:
             # Jaga being unavailable must not break resolving an issue in Sentry.
             logger.warning(

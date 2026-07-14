@@ -17,11 +17,12 @@ from typing import Any
 
 from sentry_jaga.client.api import JagaClient
 from sentry_jaga.client.exceptions import JagaError
-from sentry_jaga.client.models import Attribute, Project
+from sentry_jaga.client.models import Attribute, Project, Status
 from sentry_jaga.fields import (
     ASSIGNEE_OBJECT_TYPE,
     DESCRIPTION_OBJECT_TYPE,
     LABEL_OBJECT_TYPE,
+    SPACE_OBJECT_TYPE,
     TITLE_OBJECT_TYPE,
     build_attribute_fields,
     extract_title,
@@ -40,6 +41,16 @@ SEARCH_LIMIT = 20
 MIN_QUERY_LENGTH = 3
 RESOLVED_COMMENT = "The Sentry issue has been resolved. This task can be completed."
 UNRESOLVED_COMMENT = "The Sentry issue has been reopened: the error happened again."
+
+# The status *categories* Jaga groups every status under. The sync maps a Sentry resolve onto
+# one of these — not onto a status id — because a status id is meaningless outside its own
+# workflow: a live instance carries ~90k statuses across ~15k workflows, and they are all
+# variations on these three categories. Mapping by category means one setting for the whole
+# organization; mapping by id would mean a per-space mapping table (what Jira Server does) and
+# an unusable dropdown of 90k entries.
+CATEGORY_TODO = "status.category.todo"
+CATEGORY_IN_PROGRESS = "status.category.inprogress"
+CATEGORY_DONE = "status.category.done"
 
 
 class NoProjectsError(JagaError):
@@ -197,9 +208,11 @@ def create_task_from_form(client: JagaClient, form_data: dict[str, Any]) -> dict
 
     title_attr = find_attribute(attributes, TITLE_OBJECT_TYPE)
     title = str(form_data.get(field_name(title_attr), "")) if title_attr else task.code
-    # `metadata` travels into `ExternalIssue`. Without `task_id`, every resolve would look
-    # the task up by code again (`GET /v1/task/findExtendedWithFlexField/code/{code}`) —
-    # even though Jaga has just returned the id itself. Cf. `get_task_summary`.
+    # `metadata` travels into `ExternalIssue`: `task_id` is Jaga's own id for the task, which
+    # nothing but Jaga can reconstruct from the code. It is NOT a shortcut for the status sync —
+    # that one has to fetch the task anyway, for its `statusTransitions` and its space (see
+    # `apply_status_sync`) — it is the stable handle on the task, kept for the logs and for a
+    # future inbound sync. Cf. `get_task_summary`, which records the same thing on a link.
     return {
         "key": task.code,
         "title": title,
@@ -310,10 +323,119 @@ def status_comment(is_resolved: bool) -> str:
     return RESOLVED_COMMENT if is_resolved else UNRESOLVED_COMMENT
 
 
-def resolve_task_id(client: JagaClient, code: str, metadata: dict[str, Any] | None) -> int:
-    """Task id: from the `ExternalIssue` metadata, otherwise looked up by code."""
-    task_id = (metadata or {}).get("task_id")
-    if task_id:
-        return int(task_id)
-    raw = client.get_task_by_code(code)
-    return int(raw["id"])
+def extract_space_id(raw_task: dict[str, Any]) -> int | None:
+    """The id of the space a task lives in, read off the task itself.
+
+    A task carries its space as an ordinary EAV attribute, so there is no need to remember it
+    at link time — which matters, because a task linked before this feature existed has nothing
+    but its code stored in Sentry. Verified against a live instance; the value may arrive
+    wrapped in a list, as multi-valued attributes do.
+    """
+    for raw in raw_task.get("attributes", []):
+        if raw.get("objectTypeNameM") != SPACE_OBJECT_TYPE:
+            continue
+        value = raw.get("value")
+        if isinstance(value, list):
+            value = value[0] if value else None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def reachable_status_ids(raw_task: dict[str, Any]) -> list[int]:
+    """The statuses a task can move to from where it stands, deduplicated, order kept.
+
+    Jaga repeats ids in `statusTransitions` (a live instance returned the same id twice), and
+    the order is the one the workflow declares — which is the order we want to prefer targets
+    in, so it must survive the deduplication.
+    """
+    ids: list[int] = []
+    for raw in raw_task.get("statusTransitions") or []:
+        try:
+            status_id = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if status_id not in ids:
+            ids.append(status_id)
+    return ids
+
+
+def resolve_target_status(
+    client: JagaClient, raw_task: dict[str, Any], space_id: int, category: str
+) -> Status | None:
+    """The status to move a task into: the first REACHABLE one in the wanted category.
+
+    The iteration is over the task's own transitions, not over the statuses of the space: a
+    status in the right category that the workflow cannot reach from where the task stands is
+    not a target, it is a 4xx waiting to happen. Returning None is a legitimate outcome (a
+    workflow with no "done" step out of the current status), and the caller comments instead.
+    """
+    reachable = reachable_status_ids(raw_task)
+    if not reachable:
+        return None
+    by_id = {status.id: status for status in client.get_space_statuses(space_id)}
+    for status_id in reachable:
+        status = by_id.get(status_id)
+        if status is not None and status.category == category:
+            return status
+    return None
+
+
+def apply_status_sync(
+    client: JagaClient,
+    task_code: str,
+    *,
+    is_resolved: bool,
+    resolved_category: str,
+    unresolved_category: str,
+    post_comment: bool,
+) -> str:
+    """Reflect a Sentry status change on the linked Jaga task. Returns what it did.
+
+    The task is always fetched: the transition needs its `statusTransitions` and its space, and
+    neither is stored on the Sentry side. Moving the task is the point of the sync, but it is
+    not always possible — the workflow may simply have no step from here into the wanted
+    category — so a comment is the floor: it is posted whenever the move did not happen, and
+    additionally whenever `post_comment` asks for it.
+    """
+    raw_task = client.get_task_by_code(task_code)
+    task_id = int(raw_task["id"])
+    space_id = extract_space_id(raw_task)
+    category = resolved_category if is_resolved else unresolved_category
+
+    target: Status | None = None
+    if space_id is None:
+        # Nothing to resolve the status ids against; a comment is all that is left.
+        logger.warning(
+            "jaga.sync.space_not_found_on_task",
+            extra={"task_code": task_code, "task_id": task_id},
+        )
+    else:
+        target = resolve_target_status(client, raw_task, space_id, category)
+
+    if target is not None:
+        client.transition_task(task_id, target.id)
+        action = f"moved to {target.name!r} (id={target.id})"
+    else:
+        if space_id is not None:
+            # Not an error — but silence here looks exactly like a broken sync from the
+            # outside. Name the task, where it stands, and where it could have gone.
+            logger.warning(
+                "jaga.sync.no_status_in_category",
+                extra={
+                    "task_code": task_code,
+                    "category": category,
+                    "current_status": (raw_task.get("status") or {}).get("name"),
+                    "reachable_status_ids": reachable_status_ids(raw_task),
+                },
+            )
+        action = f"not moved: no reachable status in category {category!r}"
+
+    # A failed move must never pass silently to the user either: the comment is the fallback.
+    commented = post_comment or target is None
+    if commented:
+        client.create_comment(task_id, status_comment(is_resolved))
+
+    return f"{task_code}: {action}, {'commented' if commented else 'no comment'}"

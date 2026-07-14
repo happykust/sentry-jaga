@@ -4,7 +4,7 @@ from typing import Any
 import pytest
 
 from sentry_jaga.client.exceptions import JagaError
-from sentry_jaga.client.models import Attribute, Project, TaskRef, TaskType
+from sentry_jaga.client.models import Attribute, Project, Status, TaskRef, TaskType
 from sentry_jaga.fields import (
     ASSIGNEE_OBJECT_TYPE,
     CREATE_TS_OBJECT_TYPE,
@@ -16,13 +16,19 @@ from sentry_jaga.fields import (
     TYPE_OBJECT_TYPE,
 )
 from sentry_jaga.issue_config import (
+    CATEGORY_DONE,
+    CATEGORY_IN_PROGRESS,
+    CATEGORY_TODO,
     MIN_QUERY_LENGTH,
     NoProjectsError,
+    apply_status_sync,
     build_create_config,
     build_link_config,
     create_task_from_form,
+    extract_space_id,
     get_task_summary,
-    resolve_task_id,
+    reachable_status_ids,
+    resolve_target_status,
     search_task_summaries,
     status_comment,
 )
@@ -66,6 +72,44 @@ REAL_ATTRIBUTES = [
 USERS = [("uuid-1", "Ivanov Ivan"), ("uuid-2", "Petrov Petr")]
 LABELS = [("7", "backend"), ("8", "frontend")]
 
+# The statuses of the live test space, exactly as `workflowStatusesAvail` returns them (three,
+# not the ~90k of the global list). Jaga's own names, kept verbatim. RUF001 objects to the
+# one-letter Cyrillic preposition below, which it reads as a Latin "B" — Jaga's name is what
+# it is.
+IN_PROGRESS_NAME = "В работе"  # noqa: RUF001
+TODO_STATUS = Status(id=107391, name="Сделать", category=CATEGORY_TODO)
+IN_PROGRESS_STATUS = Status(id=107389, name=IN_PROGRESS_NAME, category=CATEGORY_IN_PROGRESS)
+DONE_STATUS = Status(id=107390, name="Готово", category=CATEGORY_DONE)
+SPACE_STATUSES = [TODO_STATUS, IN_PROGRESS_STATUS, DONE_STATUS]
+
+SPACE_ID = 11361
+TASK_ID = 500
+
+
+def raw_task(
+    *,
+    space_id: Any = SPACE_ID,
+    transitions: list[Any] | None = None,
+    with_space: bool = True,
+) -> dict[str, Any]:
+    """A task as `findExtendedWithFlexField` returns it: the space is an ordinary attribute,
+    and the statuses it can move to are listed on the task itself."""
+    attributes: list[dict[str, Any]] = [
+        {"fieldId": 100, "value": "Login is broken", "objectTypeNameM": TITLE_OBJECT_TYPE}
+    ]
+    if with_space:
+        attributes.append({"fieldId": 90, "value": space_id, "objectTypeNameM": SPACE_OBJECT_TYPE})
+    return {
+        "id": TASK_ID,
+        "code": "PLT-500",
+        "status": {"id": TODO_STATUS.id, "name": TODO_STATUS.name},
+        # From "Сделать" the live workflow reaches the in-progress and the done status.
+        "statusTransitions": [IN_PROGRESS_STATUS.id, DONE_STATUS.id]
+        if transitions is None
+        else transitions,
+        "attributes": attributes,
+    }
+
 
 class FakeClient:
     """A stand-in JagaClient: same methods, records the calls."""
@@ -76,17 +120,23 @@ class FakeClient:
         task_types: list[TaskType] | None = None,
         attributes: list[Attribute] | None = None,
         task_types_by_project: dict[int, list[TaskType]] | None = None,
+        task: dict[str, Any] | None = None,
+        statuses: list[Status] | None = None,
     ) -> None:
         self._projects = projects if projects is not None else [Project(1, "Platform", "PLT")]
         self._task_types = task_types if task_types is not None else [TaskType(10, "Bug")]
         self._task_types_by_project = task_types_by_project
         self._attributes = attributes if attributes is not None else list(REAL_ATTRIBUTES)
+        self._task = task
+        self._statuses = SPACE_STATUSES if statuses is None else statuses
         self.created: dict[str, Any] | None = None
         self.comments: list[tuple[int, str]] = []
         self.searches: list[tuple[int, str]] = []
         self.attributes_requested: list[tuple[int, int]] = []
         self.users_requested: list[int] = []
         self.labels_requested = 0
+        self.transitions: list[tuple[int, int]] = []
+        self.statuses_requested: list[int] = []
 
     def get_projects(self) -> list[Project]:
         return self._projects
@@ -122,13 +172,9 @@ class FakeClient:
         return TaskRef(id=500, code="PLT-500", title="")
 
     def get_task_by_code(self, code: str) -> dict[str, Any]:
-        return {
-            "id": 500,
-            "code": code,
-            "attributes": [
-                {"fieldId": 100, "value": "Login is broken", "objectTypeNameM": TITLE_OBJECT_TYPE}
-            ],
-        }
+        task = dict(self._task) if self._task is not None else raw_task()
+        task["code"] = code
+        return task
 
     def search_tasks(self, project_id: int, text: str, *, size: int = 20) -> list[TaskRef]:
         self.searches.append((project_id, text))
@@ -136,6 +182,13 @@ class FakeClient:
 
     def create_comment(self, task_id: int, content: str) -> None:
         self.comments.append((task_id, content))
+
+    def get_space_statuses(self, space_id: int) -> list[Status]:
+        self.statuses_requested.append(space_id)
+        return self._statuses
+
+    def transition_task(self, task_id: int, target_status_id: int) -> None:
+        self.transitions.append((task_id, target_status_id))
 
 
 def _by_name(fields: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -458,17 +511,6 @@ def test_create_task_from_form_returns_task_id_in_metadata() -> None:
     assert result["metadata"] == {"task_id": 500}
 
 
-def test_created_task_needs_no_lookup_to_resolve_its_id() -> None:
-    """End-to-end check of what I4 is for: the id of a created task resolves without a
-    round trip to Jaga."""
-    client = FakeClient()
-    created = create_task_from_form(
-        client, {"project": "1", "issue_type": "10", "title": "Login is broken"}
-    )
-
-    assert resolve_task_id(client, created["key"], created["metadata"]) == 500
-
-
 def test_warns_when_no_system_attribute_recognised(caplog: pytest.LogCaptureFixture) -> None:
     """The title/description mnemonics hold on the instance we probed, but they are not a
     documented contract. If not a single one is recognised, the miss must not degrade
@@ -601,9 +643,186 @@ def test_status_comment_distinguishes_resolution() -> None:
     assert "reopened" in status_comment(is_resolved=False).lower()
 
 
-def test_resolve_task_id_prefers_metadata() -> None:
-    assert resolve_task_id(FakeClient(), "PLT-500", {"task_id": 77}) == 77
+# --- the space a task lives in --------------------------------------------------------
 
 
-def test_resolve_task_id_falls_back_to_lookup_by_code() -> None:
-    assert resolve_task_id(FakeClient(), "PLT-500", {}) == 500
+def test_extract_space_id() -> None:
+    assert extract_space_id(raw_task()) == SPACE_ID
+
+
+def test_extract_space_id_when_the_value_arrives_as_a_list() -> None:
+    """Jaga wraps the values of multi-valued attributes in a list, and the space attribute is
+    not guaranteed to be scalar. A list must not turn into `int(['11361'])`."""
+    assert extract_space_id(raw_task(space_id=[SPACE_ID])) == SPACE_ID
+
+
+def test_extract_space_id_from_a_string_value() -> None:
+    assert extract_space_id(raw_task(space_id="11361")) == SPACE_ID
+
+
+def test_extract_space_id_without_the_attribute_is_none() -> None:
+    assert extract_space_id(raw_task(with_space=False)) is None
+
+
+@pytest.mark.parametrize("value", [None, "", [], "not-a-number"])
+def test_extract_space_id_of_an_unusable_value_is_none(value: Any) -> None:
+    """None rather than a crash: a task we cannot place in a space still gets its comment."""
+    assert extract_space_id(raw_task(space_id=value)) is None
+
+
+# --- which statuses a task can reach --------------------------------------------------
+
+
+def test_reachable_status_ids_deduplicates_and_keeps_the_order() -> None:
+    """A live instance repeats ids in `statusTransitions`. The order is the workflow's own, and
+    it is the order targets are preferred in, so it has to survive deduplication."""
+    task = raw_task(transitions=[107390, 107389, 107390, 107389, 107391])
+    assert reachable_status_ids(task) == [107390, 107389, 107391]
+
+
+def test_reachable_status_ids_when_there_are_none() -> None:
+    assert reachable_status_ids(raw_task(transitions=[])) == []
+
+
+def test_reachable_status_ids_skips_junk_instead_of_raising() -> None:
+    """A value that is not an id cannot name a status anyway, so it is dropped. It must not
+    raise: `sync_status_outbound` only catches `JagaError`, so a ValueError escaping here would
+    take the Sentry-side resolve down with it — the one thing the sync must never do."""
+    task = raw_task(transitions=[None, "oops", DONE_STATUS.id])
+
+    assert reachable_status_ids(task) == [DONE_STATUS.id]
+
+
+def test_resolve_target_status_picks_the_status_of_the_wanted_category() -> None:
+    client = FakeClient()
+    target = resolve_target_status(client, raw_task(), SPACE_ID, CATEGORY_DONE)
+
+    assert target == DONE_STATUS
+    assert client.statuses_requested == [SPACE_ID]
+
+
+def test_resolve_target_status_ignores_a_status_the_task_cannot_reach() -> None:
+    """THE central guarantee. "Готово" exists in the space and is in the wanted category — but
+    the workflow does not allow the task to go there from where it stands. Moving it anyway
+    would be a 4xx from Jaga; the sync must decline and let the caller comment."""
+    task = raw_task(transitions=[IN_PROGRESS_STATUS.id])  # "Готово" is NOT reachable
+
+    assert resolve_target_status(FakeClient(), task, SPACE_ID, CATEGORY_DONE) is None
+
+
+def test_resolve_target_status_without_any_transitions_is_none() -> None:
+    task = raw_task(transitions=[])
+
+    client = FakeClient()
+    assert resolve_target_status(client, task, SPACE_ID, CATEGORY_DONE) is None
+    # A task that can go nowhere needs no list of statuses to compare against.
+    assert client.statuses_requested == []
+
+
+# --- the sync itself ------------------------------------------------------------------
+
+
+def _sync(client: FakeClient, **kwargs: Any) -> str:
+    defaults: dict[str, Any] = {
+        "is_resolved": True,
+        "resolved_category": CATEGORY_DONE,
+        "unresolved_category": CATEGORY_TODO,
+        "post_comment": True,
+    }
+    return apply_status_sync(client, "PLT-500", **{**defaults, **kwargs})
+
+
+def test_apply_status_sync_moves_the_task_on_resolve() -> None:
+    client = FakeClient()
+
+    result = _sync(client, post_comment=False)
+
+    assert client.transitions == [(TASK_ID, DONE_STATUS.id)]
+    assert "Готово" in result
+
+
+def test_apply_status_sync_moves_the_task_back_on_regression() -> None:
+    """A reopen uses the *unresolved* category — the whole point of having two settings."""
+    client = FakeClient(task=raw_task(transitions=[TODO_STATUS.id, DONE_STATUS.id]))
+
+    _sync(client, is_resolved=False, post_comment=False)
+
+    assert client.transitions == [(TASK_ID, TODO_STATUS.id)]
+
+
+def test_apply_status_sync_does_not_comment_when_the_move_worked() -> None:
+    """`post_comment=False` means the move IS the notification — no comment on top of it."""
+    client = FakeClient()
+
+    result = _sync(client, post_comment=False)
+
+    assert client.transitions == [(TASK_ID, DONE_STATUS.id)]
+    assert client.comments == []
+    assert "no comment" in result
+
+
+def test_apply_status_sync_comments_on_top_of_the_move_when_asked() -> None:
+    client = FakeClient()
+
+    _sync(client, post_comment=True)
+
+    assert client.transitions == [(TASK_ID, DONE_STATUS.id)]
+    assert [task_id for task_id, _ in client.comments] == [TASK_ID]
+    assert "resolved" in client.comments[0][1].lower()
+
+
+def test_apply_status_sync_never_moves_to_an_unreachable_status(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The workflow offers no way into "done" from here. The task must stay where it is —
+    a comment is the fallback, even with `post_comment=False`."""
+    client = FakeClient(task=raw_task(transitions=[IN_PROGRESS_STATUS.id]))
+
+    with caplog.at_level(logging.WARNING, logger="sentry_jaga.issue_config"):
+        result = _sync(client, post_comment=False)
+
+    assert client.transitions == []
+    assert [task_id for task_id, _ in client.comments] == [TASK_ID]
+    assert "not moved" in result
+
+    record = next(r for r in caplog.records if r.message == "jaga.sync.no_status_in_category")
+    assert record.category == CATEGORY_DONE  # type: ignore[attr-defined]
+    assert record.task_code == "PLT-500"  # type: ignore[attr-defined]
+    assert record.reachable_status_ids == [IN_PROGRESS_STATUS.id]  # type: ignore[attr-defined]
+
+
+def test_apply_status_sync_deduplicates_the_transitions_it_was_given() -> None:
+    """Duplicates in `statusTransitions` are real. They must not turn into two moves."""
+    client = FakeClient(
+        task=raw_task(transitions=[DONE_STATUS.id, DONE_STATUS.id, IN_PROGRESS_STATUS.id])
+    )
+
+    _sync(client, post_comment=False)
+
+    assert client.transitions == [(TASK_ID, DONE_STATUS.id)]
+
+
+def test_apply_status_sync_comments_when_the_task_has_no_space(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Without a space there is nothing to resolve status ids against. Still comment, and say
+    so in the log — silence would read as a sync that simply does not work."""
+    client = FakeClient(task=raw_task(with_space=False))
+
+    with caplog.at_level(logging.WARNING, logger="sentry_jaga.issue_config"):
+        _sync(client)
+
+    assert client.transitions == []
+    assert client.statuses_requested == []
+    assert [task_id for task_id, _ in client.comments] == [TASK_ID]
+    assert any(r.message == "jaga.sync.space_not_found_on_task" for r in caplog.records)
+
+
+def test_apply_status_sync_honours_a_category_the_admin_chose() -> None:
+    """The categories are settings, not constants: an org that moves resolved issues to
+    "In progress" for a human to close by hand must get exactly that."""
+    client = FakeClient()
+
+    _sync(client, resolved_category=CATEGORY_IN_PROGRESS, post_comment=False)
+
+    assert client.transitions == [(TASK_ID, IN_PROGRESS_STATUS.id)]

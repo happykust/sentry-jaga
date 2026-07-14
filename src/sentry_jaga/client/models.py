@@ -105,3 +105,27 @@ class TaskRef:
     @classmethod
     def from_api(cls, payload: dict[str, Any]) -> TaskRef:
         return cls(id=payload["id"], code=payload["code"], title=payload.get("title", ""))
+
+
+@dataclass(frozen=True, slots=True)
+class Status:
+    """A task status inside one workflow.
+
+    `category` is `categoryNameM` — the mnemonic of the status *category*
+    (`status.category.done` and friends). It is the only part of a status that is stable
+    across the instance: a live instance carries ~90k statuses over ~15k workflows, all of
+    them variations on the same handful of categories. The status sync therefore keys on the
+    category and resolves the concrete `id` per space; see `issue_config.resolve_target_status`.
+    """
+
+    id: int
+    name: str
+    category: str
+
+    @classmethod
+    def from_api(cls, payload: dict[str, Any]) -> Status:
+        return cls(
+            id=int(payload["id"]),
+            name=str(payload.get("name") or ""),
+            category=str(payload.get("categoryNameM") or ""),
+        )

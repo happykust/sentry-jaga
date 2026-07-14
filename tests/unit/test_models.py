@@ -1,6 +1,6 @@
 from datetime import UTC, datetime, timedelta
 
-from sentry_jaga.client.models import Attribute, Project, TaskRef, TaskType, Token
+from sentry_jaga.client.models import Attribute, Project, Status, TaskRef, TaskType, Token
 
 AUTH_PAYLOAD = {
     "accessToken": "at",
@@ -74,3 +74,26 @@ def test_attribute_from_api_dictionary_and_multiple() -> None:
 def test_task_ref_from_api() -> None:
     ref = TaskRef.from_api({"id": 5, "code": "PLT-5", "title": "Login is broken"})
     assert (ref.id, ref.code, ref.title) == (5, "PLT-5", "Login is broken")
+
+
+def test_status_from_api_reads_the_category_mnemonic() -> None:
+    """`categoryNameM` is the field the whole status sync keys on — not `nameM`, and not the
+    display name, both of which vary per workflow. The payload is a real one from
+    `workflowStatusesAvail`."""
+    status = Status.from_api(
+        {
+            "id": 107390,
+            "name": "Готово",
+            "nameM": "done",
+            "categoryNameM": "status.category.done",
+            "ownerWfId": 4212,
+        }
+    )
+    assert (status.id, status.name, status.category) == (107390, "Готово", "status.category.done")
+
+
+def test_status_from_api_without_a_category() -> None:
+    """A status with no category cannot match any mapping — it must come out as "", not crash,
+    so that one odd status does not take the whole sync down with a KeyError."""
+    status = Status.from_api({"id": 1, "name": "Odd"})
+    assert status.category == ""

@@ -10,7 +10,7 @@ import requests
 
 from sentry_jaga.client.auth import Cache, InMemoryCache, TokenManager
 from sentry_jaga.client.exceptions import JagaApiError, error_from_response
-from sentry_jaga.client.models import Attribute, Project, TaskRef, TaskType, Token
+from sentry_jaga.client.models import Attribute, Project, Status, TaskRef, TaskType, Token
 
 API_PREFIX = "/external-api"
 STATUS_MODIFIER_TODO = 1
@@ -20,6 +20,10 @@ DEFAULT_PAGE_SIZE = 100
 # (`updatesForm`, with no debounce). A short TTL absorbs the burst without risking a
 # stale list for long.
 PROJECTS_CACHE_TTL = 60
+# The statuses of a space change only when someone edits the workflow behind it — rare, and
+# never mid-incident. Every resolve and every regression asks for them, so cache them; five
+# minutes is short enough that a workflow edit lands on its own without a restart.
+STATUSES_CACHE_TTL = 300
 
 
 class JagaClient:
@@ -43,6 +47,7 @@ class JagaClient:
         self._cache = cache or InMemoryCache()
         prefix = self._cache_prefix(instance_url, email)
         self._projects_cache_key = f"{prefix}:projects"
+        self._statuses_cache_prefix = f"{prefix}:statuses"
         self._tokens = TokenManager(
             login=self.login,
             refresh=self.refresh,
@@ -170,6 +175,24 @@ class JagaClient:
             users.append((str(person_uuid), str(item.get("displayName") or person_uuid)))
         return users
 
+    def get_space_statuses(self, space_id: int) -> list[Status]:
+        """The statuses reachable inside one space, with a short-lived cache.
+
+        This endpoint — and NOT `/v1/taskStatusRef` — is what makes the status sync possible.
+        `/v1/taskStatusRef` answers with every status the instance knows: ~90k of them over
+        ~15k workflows, because each workflow owns its own copies of the same handful of
+        statuses. Scoped to a space, the same data is a list of three or four.
+        """
+        key = f"{self._statuses_cache_prefix}:{space_id}"
+        cached = self._cache.get(key)
+        if cached is not None:
+            return [Status.from_api(item) for item in cached.get("items", [])]
+
+        payload = self._authed("GET", "/v1/workflowStatusesAvail", params={"projectId": space_id})
+        items: list[dict[str, Any]] = payload if isinstance(payload, list) else []
+        self._cache.set(key, {"items": items}, timeout=STATUSES_CACHE_TTL)
+        return [Status.from_api(item) for item in items]
+
     def get_labels(self) -> list[tuple[str, str]]:
         """Every label, as (id, name) pairs — the value of `task.label_id` is the label id.
 
@@ -215,6 +238,20 @@ class JagaClient:
             params={"projectId": project_id, "searchText": text, "page": 0, "size": size},
         )
         return [TaskRef.from_api(item) for item in payload.get("content", [])]
+
+    def transition_task(self, task_id: int, target_status_id: int) -> None:
+        """Move a task to another status.
+
+        `formFields` is declared required by the API, and an empty list is accepted: verified
+        against a live instance, in both directions ("Сделать" -> "Готово" -> "Сделать"). A
+        transition whose workflow demands a filled form would be refused here — the caller
+        (`issue_config.apply_status_sync`) falls back to a comment on any Jaga error.
+        """
+        self._authed(
+            "POST",
+            "/v1/task/updateTaskStatusAndFields",
+            json={"taskId": task_id, "targetStatusId": target_status_id, "formFields": []},
+        )
 
     def create_comment(self, task_id: int, content: str) -> None:
         self._authed(

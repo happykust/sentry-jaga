@@ -468,6 +468,76 @@ def test_create_comment(client: JagaClient) -> None:
     }
 
 
+# The three statuses a real space answers `workflowStatusesAvail` with. Names are Jaga's own,
+# kept verbatim (CONTRIBUTING: "text we quote from Jaga"). RUF001 objects to the one-letter
+# Cyrillic preposition below, which it reads as a Latin "B" — but Jaga's name is what it is.
+IN_PROGRESS_NAME = "В работе"  # noqa: RUF001
+SPACE_STATUSES_PAYLOAD: list[dict[str, Any]] = [
+    {"id": 107391, "name": "Сделать", "categoryNameM": "status.category.todo"},
+    {"id": 107389, "name": IN_PROGRESS_NAME, "categoryNameM": "status.category.inprogress"},
+    {"id": 107390, "name": "Готово", "categoryNameM": "status.category.done"},
+]
+
+
+@responses.activate
+def test_get_space_statuses(client: JagaClient) -> None:
+    """The statuses of ONE space, from `workflowStatusesAvail?projectId=` — the only endpoint
+    that answers with a usable list. `/v1/taskStatusRef` returns all ~90k of them."""
+    _mock_login()
+    responses.add(
+        responses.GET, f"{API}/v1/workflowStatusesAvail", json=SPACE_STATUSES_PAYLOAD, status=200
+    )
+
+    statuses = client.get_space_statuses(11361)
+
+    assert [(s.id, s.name, s.category) for s in statuses] == [
+        (107391, "Сделать", "status.category.todo"),
+        (107389, IN_PROGRESS_NAME, "status.category.inprogress"),
+        (107390, "Готово", "status.category.done"),
+    ]
+    request = responses.calls[-1].request
+    assert "projectId=11361" in str(request.url)
+
+
+@responses.activate
+def test_get_space_statuses_is_cached_per_space(client: JagaClient) -> None:
+    """Every resolve and every regression asks for these. Cache them — but per space: two
+    spaces must not see each other's statuses, or the sync would move a task into a status
+    from another workflow."""
+    _mock_login()
+    responses.add(
+        responses.GET, f"{API}/v1/workflowStatusesAvail", json=SPACE_STATUSES_PAYLOAD, status=200
+    )
+    responses.add(
+        responses.GET,
+        f"{API}/v1/workflowStatusesAvail",
+        json=[{"id": 9, "name": "Other", "categoryNameM": "status.category.done"}],
+        status=200,
+    )
+
+    first = client.get_space_statuses(11361)
+    again = client.get_space_statuses(11361)
+    other = client.get_space_statuses(22222)
+
+    assert [s.id for s in first] == [s.id for s in again] == [107391, 107389, 107390]
+    assert [s.id for s in other] == [9]
+    status_calls = [c for c in responses.calls if "workflowStatusesAvail" in c.request.url]
+    assert len(status_calls) == 2  # one per space, the repeat came from the cache
+
+
+@responses.activate
+def test_transition_task(client: JagaClient) -> None:
+    """`formFields` is declared required by the API and an empty list is accepted — verified
+    against a live instance. Sending it is not optional: leaving the key out is a 4xx."""
+    _mock_login()
+    responses.add(responses.POST, f"{API}/v1/task/updateTaskStatusAndFields", json={}, status=202)
+
+    client.transition_task(task_id=1703944, target_status_id=107390)
+
+    sent = json.loads(responses.calls[-1].request.body)
+    assert sent == {"taskId": 1703944, "targetStatusId": 107390, "formFields": []}
+
+
 @responses.activate
 def test_relogins_once_on_401(client: JagaClient) -> None:
     _mock_login()
