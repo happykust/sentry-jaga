@@ -1,10 +1,11 @@
 import json
+import logging
 from typing import Any
 
 import pytest
 import responses
 
-from sentry_jaga.client.api import JagaClient
+from sentry_jaga.client.api import MAX_MEMBER_PAGES, JagaClient
 from sentry_jaga.client.auth import InMemoryCache
 from sentry_jaga.client.exceptions import (
     JagaAuthError,
@@ -269,35 +270,167 @@ def test_get_task_type_attributes_flattens_groups(client: JagaClient) -> None:
 # --- value sources for the reference attributes with no dictionary ---------
 
 
+def _matrix_url(space_id: int) -> str:
+    return f"{API}/v1/team/userRoles/applications/JAGA/projects/{space_id}"
+
+
+def _matrix_page(users: list[dict[str, Any]], total_pages: int = 1) -> dict[str, Any]:
+    """One page of the user-role matrix: roles, each carrying the users that hold it."""
+    return {
+        "content": [{"rolesList": [], "usersRoles": [{"user": u, "roles": []} for u in users]}],
+        "totalPages": total_pages,
+        "pageNumber": 0,
+        "totalElements": len(users),
+    }
+
+
 @responses.activate
-def test_get_space_users_returns_person_uuids(client: JagaClient) -> None:
-    """The value of `task.assignee_uuid` is the person UUID, NOT the numeric profile id."""
+def test_get_space_users_reads_the_role_matrix_and_returns_emails(client: JagaClient) -> None:
+    """The select's value is the EMAIL, not the person UUID the attribute finally stores.
+
+    The matrix is the only member list that works on a live instance, and it carries no UUID —
+    those cost one call each, which the form cannot afford for every member. So the email travels
+    and the UUID is resolved for whoever is picked. See `resolve_assignee_cells`.
+    """
     _mock_login()
     responses.add(
         responses.GET,
-        f"{API}/v1/project/getUserProfileDtos/1",
-        json=[
-            {
-                "id": 2986,
-                "personUuid": "b177cf3d-d2e3-4da8-bd94-0cc0ba172514",
-                "email": "ivanov@example.com",
-                "status": "ACTIVE",
-                "displayName": "Ivanov Ivan",
-                "canBeAssign": True,
-                "isBlocked": False,
-            }
-        ],
+        _matrix_url(1),
+        json=_matrix_page(
+            [
+                {
+                    "id": 365474,  # the TEAM id — not the Core id, and nothing reads it
+                    "displayName": "Ivanov Ivan",
+                    "email": "ivanov@example.com",
+                    "isGroup": False,
+                    "type": "USER",
+                }
+            ]
+        ),
         status=200,
     )
 
-    assert client.get_space_users(1) == [("b177cf3d-d2e3-4da8-bd94-0cc0ba172514", "Ivanov Ivan")]
+    assert client.get_space_users(1) == [("ivanov@example.com", "Ivanov Ivan")]
 
 
 @responses.activate
-def test_get_space_users_drops_who_cannot_be_assigned(client: JagaClient) -> None:
-    """Offering a blocked or non-assignable member would only build a task Jaga refuses, and a
-    profile with no `personUuid` has no value to send at all."""
+def test_get_space_users_drops_groups_and_the_email_less(client: JagaClient) -> None:
+    """A group cannot be the executor of a task, and a member with no email can never be resolved
+    to a UUID — offering either would only build a form whose submit fails."""
     _mock_login()
+    responses.add(
+        responses.GET,
+        _matrix_url(1),
+        json=_matrix_page(
+            [
+                {
+                    "id": 1,
+                    "displayName": "Person",
+                    "email": "p@e.com",
+                    "isGroup": False,
+                    "type": "USER",
+                },
+                {
+                    "id": 2,
+                    "displayName": "A group",
+                    "email": "g@e.com",
+                    "isGroup": True,
+                    "type": "GROUP",
+                },
+                {
+                    "id": 3,
+                    "displayName": "No email",
+                    "email": None,
+                    "isGroup": False,
+                    "type": "USER",
+                },
+            ]
+        ),
+        status=200,
+    )
+
+    assert client.get_space_users(1) == [("p@e.com", "Person")]
+
+
+@responses.activate
+def test_get_space_users_dedupes_a_member_who_holds_two_roles(client: JagaClient) -> None:
+    """The matrix is a page of ROLES, each with its holders — so one person appears once per role
+    they have. Listing them twice would put them twice in the dropdown."""
+    _mock_login()
+    person = {
+        "id": 1,
+        "displayName": "Two hats",
+        "email": "both@example.com",
+        "isGroup": False,
+        "type": "USER",
+    }
+    responses.add(
+        responses.GET,
+        _matrix_url(1),
+        json={
+            "content": [
+                {"rolesList": [], "usersRoles": [{"user": person}]},
+                {"rolesList": [], "usersRoles": [{"user": person}]},
+            ],
+            "totalPages": 1,
+        },
+        status=200,
+    )
+
+    assert client.get_space_users(1) == [("both@example.com", "Two hats")]
+
+
+@responses.activate
+def test_get_space_users_reads_every_page(client: JagaClient) -> None:
+    """The 101st member of a space must be offered too."""
+    _mock_login()
+    responses.add(
+        responses.GET,
+        _matrix_url(1),
+        json=_matrix_page(
+            [
+                {
+                    "id": 1,
+                    "displayName": "One",
+                    "email": "one@e.com",
+                    "isGroup": False,
+                    "type": "USER",
+                }
+            ],
+            total_pages=2,
+        ),
+        status=200,
+    )
+    responses.add(
+        responses.GET,
+        _matrix_url(1),
+        json=_matrix_page(
+            [
+                {
+                    "id": 2,
+                    "displayName": "Two",
+                    "email": "two@e.com",
+                    "isGroup": False,
+                    "type": "USER",
+                }
+            ],
+            total_pages=2,
+        ),
+        status=200,
+    )
+
+    assert client.get_space_users(1) == [("one@e.com", "One"), ("two@e.com", "Two")]
+
+
+@responses.activate
+def test_get_space_users_falls_back_to_the_documented_endpoint_when_the_matrix_errors(
+    client: JagaClient,
+) -> None:
+    """`applicationMnemo` is a guess ("JAGA" is what the live instance takes, and the spec names
+    no value at all). An instance that calls its application something else answers 404 — and the
+    documented endpoint, dead as it is here, is then the only thing left to try."""
+    _mock_login()
+    responses.add(responses.GET, _matrix_url(1), json={"error": "nope"}, status=404)
     responses.add(
         responses.GET,
         f"{API}/v1/project/getUserProfileDtos/1",
@@ -305,30 +438,169 @@ def test_get_space_users_drops_who_cannot_be_assigned(client: JagaClient) -> Non
             {
                 "id": 1,
                 "personUuid": "uuid-ok",
-                "displayName": "Assignable",
+                "email": "fallback@example.com",
+                "displayName": "From the old endpoint",
                 "canBeAssign": True,
                 "isBlocked": False,
             },
             {
                 "id": 2,
                 "personUuid": "uuid-blocked",
+                "email": "blocked@example.com",
                 "displayName": "Blocked",
                 "canBeAssign": True,
                 "isBlocked": True,
             },
-            {
-                "id": 3,
-                "personUuid": "uuid-observer",
-                "displayName": "Cannot be assigned",
-                "canBeAssign": False,
-                "isBlocked": False,
-            },
-            {"id": 4, "displayName": "No person uuid", "canBeAssign": True, "isBlocked": False},
         ],
         status=200,
     )
 
-    assert client.get_space_users(1) == [("uuid-ok", "Assignable")]
+    assert client.get_space_users(1) == [("fallback@example.com", "From the old endpoint")]
+
+
+@responses.activate
+def test_get_space_users_takes_an_empty_matrix_at_face_value(client: JagaClient) -> None:
+    """A space really can have nobody in it. Falling back on an EMPTY (as opposed to failing)
+    matrix would re-introduce the very bug this replaced: `getUserProfileDtos` answers 200 with
+    [] for every space on the live instance, so a second empty answer would hide the first."""
+    _mock_login()
+    responses.add(responses.GET, _matrix_url(1), json=_matrix_page([]), status=200)
+
+    assert client.get_space_users(1) == []
+    assert not [call for call in responses.calls if "getUserProfileDtos" in call.request.url], (
+        "the dead endpoint must not be called when the matrix answered properly"
+    )
+
+
+# --- resolving one person: the only door to a UUID -------------------------
+
+
+@responses.activate
+def test_find_person_by_email_returns_all_three_identifiers(client: JagaClient) -> None:
+    """Jaga keeps two unrelated numeric ids for one human, plus the UUID. `Person` names each."""
+    _mock_login()
+    responses.add(
+        responses.POST,
+        f"{API}/v1/team/userProfile/findByMailOrName",
+        json={
+            "coreId": 193688,
+            "teamId": 365474,
+            "uuid": "aea8739a-c7dc-49c3-b1e5-5bc909ef364f",
+            "mail": "ivanov@example.com",
+            "fullName": "Ivanov Ivan",
+        },
+        status=200,
+    )
+
+    person = client.find_person_by_email("ivanov@example.com")
+
+    assert person is not None
+    assert person.uuid == "aea8739a-c7dc-49c3-b1e5-5bc909ef364f"
+    assert person.core_id == 193688
+    assert person.team_id == 365474
+    assert person.email == "ivanov@example.com"
+    assert person.name == "Ivanov Ivan"
+
+
+@responses.activate
+def test_find_person_by_email_treats_400_as_not_found(client: JagaClient) -> None:
+    """Jaga answers an unknown email with 400 and `NotFoundException` — a 400 that means "no such
+    user". A Sentry user is under no obligation to exist in Jaga, so this is not an error."""
+    _mock_login()
+    responses.add(
+        responses.POST,
+        f"{API}/v1/team/userProfile/findByMailOrName",
+        json={"error": '{"status":400,"message":"User with email x@e.com does not exists"}'},
+        status=400,
+    )
+
+    assert client.find_person_by_email("x@e.com") is None
+
+
+@responses.activate
+def test_find_person_by_email_still_raises_on_a_real_failure(client: JagaClient) -> None:
+    """Only 400/404 mean "not found". A 500 is Jaga breaking, and must not be read as "nobody"."""
+    _mock_login()
+    responses.add(
+        responses.POST, f"{API}/v1/team/userProfile/findByMailOrName", json={}, status=500
+    )
+
+    with pytest.raises(JagaError):
+        client.find_person_by_email("x@e.com")
+
+
+@responses.activate
+def test_find_person_by_email_caches_the_answer(client: JagaClient) -> None:
+    """A UUID is immutable, and this runs on every assignment and every create."""
+    _mock_login()
+    responses.add(
+        responses.POST,
+        f"{API}/v1/team/userProfile/findByMailOrName",
+        json={"coreId": 1, "teamId": 2, "uuid": "u", "mail": "a@e.com", "fullName": "A"},
+        status=200,
+    )
+
+    first = client.find_person_by_email("a@e.com")
+    second = client.find_person_by_email("a@e.com")
+
+    assert first == second
+    lookups = [c for c in responses.calls if "findByMailOrName" in c.request.url]
+    assert len(lookups) == 1, "the second lookup must come from the cache"
+
+
+@responses.activate
+def test_find_person_by_email_caches_a_miss_too(client: JagaClient) -> None:
+    """A Sentry user with no Jaga account must not cost a round trip on every single assignment."""
+    _mock_login()
+    responses.add(
+        responses.POST, f"{API}/v1/team/userProfile/findByMailOrName", json={}, status=400
+    )
+
+    assert client.find_person_by_email("nobody@example.com") is None
+    assert client.find_person_by_email("nobody@example.com") is None
+
+    lookups = [c for c in responses.calls if "findByMailOrName" in c.request.url]
+    assert len(lookups) == 1, "the miss must be cached, not re-asked"
+
+
+def test_find_person_by_email_does_not_call_jaga_for_a_blank_email(client: JagaClient) -> None:
+    """No HTTP mock is registered: any request at all would raise ConnectionError."""
+    assert client.find_person_by_email("   ") is None
+
+
+# --- writing the assignee --------------------------------------------------
+
+
+@responses.activate
+def test_set_task_assignees_patches_the_attribute(client: JagaClient) -> None:
+    """The assignee is an EAV attribute, not a task role: `PUT /v1/taskRole/task/{id}/executor` is
+    what the spec offers and it 404s on the live instance (no handler at all). `PATCH /v1/task/
+    {id}` takes the same cell the create builds, and the value travels as a LIST."""
+    _mock_login()
+    responses.add(responses.PATCH, f"{API}/v1/task/1703944", json={"id": 1703944}, status=200)
+
+    client.set_task_assignees(1703944, 867868, ["uuid-a"])
+
+    body = json.loads(responses.calls[-1].request.body)
+    assert body == {
+        "fieldId": 867868,
+        "value": ["uuid-a"],
+        "referenceValue": True,
+        "addInfo": {},
+        "objectTypeNameM": "task.assignee_uuid",
+    }
+
+
+@responses.activate
+def test_set_task_assignees_clears_with_an_empty_list(client: JagaClient) -> None:
+    """Unassigning in Sentry has to reach Jaga. Verified against a live instance: an empty list
+    empties the field."""
+    _mock_login()
+    responses.add(responses.PATCH, f"{API}/v1/task/7", json={}, status=200)
+
+    client.set_task_assignees(7, 867868, [])
+
+    assert json.loads(responses.calls[-1].request.body)["value"] == []
 
 
 @responses.activate
@@ -812,3 +1084,56 @@ def test_send_raises_with_text_body_on_non_json_error(client: JagaClient) -> Non
 
     assert exc_info.value.status_code == 502
     assert exc_info.value.body == "<html>502 Bad Gateway</html>"
+
+
+@responses.activate
+def test_get_space_users_stops_and_says_so_when_a_space_has_absurdly_many_members(
+    client: JagaClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A space that claims more pages than the cap must not hang the form render for minutes —
+    and must not pretend it listed everyone either. Silent truncation reads as "that is all of
+    them", which is exactly the kind of quiet lie this endpoint replaced."""
+    _mock_login()
+    for page in range(MAX_MEMBER_PAGES):
+        responses.add(
+            responses.GET,
+            _matrix_url(1),
+            json=_matrix_page(
+                [
+                    {
+                        "id": page,
+                        "displayName": f"Member {page}",
+                        "email": f"m{page}@e.com",
+                        "isGroup": False,
+                        "type": "USER",
+                    }
+                ],
+                total_pages=MAX_MEMBER_PAGES + 5,
+            ),
+            status=200,
+        )
+
+    with caplog.at_level(logging.WARNING, logger="sentry_jaga.client"):
+        users = client.get_space_users(1)
+
+    assert len(users) == MAX_MEMBER_PAGES
+    pages_read = [c for c in responses.calls if "userRoles" in c.request.url]
+    assert len(pages_read) == MAX_MEMBER_PAGES, "the cap must actually stop the loop"
+    assert "jaga.client.member_list_truncated" in caplog.text
+
+
+@responses.activate
+def test_find_person_by_email_returns_none_when_jaga_answers_without_a_uuid(
+    client: JagaClient,
+) -> None:
+    """A 200 with no `uuid` in it is not a person we can assign: the UUID is the only thing the
+    attribute takes. Returning a `Person` with an empty uuid would put `""` on a real task."""
+    _mock_login()
+    responses.add(
+        responses.POST,
+        f"{API}/v1/team/userProfile/findByMailOrName",
+        json={"coreId": 1, "mail": "a@e.com"},
+        status=200,
+    )
+
+    assert client.find_person_by_email("a@e.com") is None

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from typing import Any
 from urllib.parse import urljoin
 
@@ -10,13 +11,23 @@ import requests
 
 from sentry_jaga.client.auth import Cache, InMemoryCache, TokenManager
 from sentry_jaga.client.exceptions import JagaApiError, JagaError, error_from_response
-from sentry_jaga.client.models import Attribute, Project, Status, TaskRef, TaskType, Token
-from sentry_jaga.fields import extract_title
+from sentry_jaga.client.models import Attribute, Person, Project, Status, TaskRef, TaskType, Token
+from sentry_jaga.fields import ASSIGNEE_OBJECT_TYPE, extract_title
+
+logger = logging.getLogger("sentry_jaga.client")
 
 API_PREFIX = "/external-api"
 STATUS_MODIFIER_TODO = 1
 DEFAULT_TIMEOUT = 30
 DEFAULT_PAGE_SIZE = 100
+# The application the space-membership endpoints are scoped to. `applicationMnemo` is a required
+# path segment that the spec describes only as "Мнемоника приложения", with no enum, no example
+# and no endpoint that lists the applications. "JAGA" is the value the live instance accepts.
+APPLICATION_MNEMO = "JAGA"
+# A space with more members than this reads its first 20 pages (2000 people) and logs that it
+# stopped. The cap exists so that a pathological space cannot hang a form render for minutes;
+# it is far above any space a human would pick an assignee from in a dropdown.
+MAX_MEMBER_PAGES = 20
 # The list of spaces rarely changes, yet the link form re-fetches it on every keystroke
 # (`updatesForm`, with no debounce). A short TTL absorbs the burst without risking a
 # stale list for long.
@@ -25,6 +36,10 @@ PROJECTS_CACHE_TTL = 60
 # never mid-incident. Every resolve and every regression asks for them, so cache them; five
 # minutes is short enough that a workflow edit lands on its own without a restart.
 STATUSES_CACHE_TTL = 300
+# A person's UUID is immutable — it is the identity itself, not a property of it. An hour is
+# simply a bound on remembering someone who has been deleted from Jaga, and on the negative
+# entries: a Sentry user with no Jaga account must not cost a round trip on every assignment.
+PERSON_CACHE_TTL = 3600
 
 
 class JagaClient:
@@ -49,6 +64,7 @@ class JagaClient:
         prefix = self._cache_prefix(instance_url, email)
         self._projects_cache_key = f"{prefix}:projects"
         self._statuses_cache_prefix = f"{prefix}:statuses"
+        self._person_cache_prefix = f"{prefix}:person"
         self._tokens = TokenManager(
             login=self.login,
             refresh=self.refresh,
@@ -158,23 +174,164 @@ class JagaClient:
         return [(str(item["id"]), item["value"]) for item in items]
 
     def get_space_users(self, space_id: int) -> list[tuple[str, str]]:
-        """Members of a space a task can be assigned to: (personUuid, displayName) pairs.
+        """Members of a space a task can be assigned to: (email, displayName) pairs.
 
-        The value of `task.assignee_uuid` is the person UUID — the cross-system id — and NOT
-        the numeric profile `id`, so a profile without one is unusable and dropped.
+        The value is an EMAIL, not the person UUID the `task.assignee_uuid` attribute ultimately
+        takes. That is deliberate, and it is the whole reason the assignee select works at all:
 
-        Blocked accounts and profiles Jaga marks as not assignable are dropped as well:
-        offering them would only build a task Jaga refuses to accept.
+        * the member list gives no UUID. Only three endpoints in the whole API return one, and
+          two of them are unusable here (see `_space_members`), leaving `find_person_by_email`
+          — which resolves ONE person per call.
+        * so filling a select of N members with UUIDs would cost N HTTP calls before the create
+          form can be drawn. A space with fifty people would hang the form for seconds, every
+          time it is opened.
+
+        Carrying the email instead costs nothing to list, and the UUID is resolved for the one
+        person who was actually picked, at submit time — one call instead of N. See
+        `issue_config.resolve_assignee_cells`.
+
+        Members with no email are dropped: they cannot be resolved later, so offering them would
+        only build a form whose submit fails.
         """
+        members = self._space_members(space_id)
+        return [
+            (str(m["email"]), str(m.get("displayName") or m["email"]))
+            for m in members
+            if m.get("email")
+        ]
+
+    def _space_members(self, space_id: int) -> list[dict[str, Any]]:
+        """The people in a space — from the user-role matrix, not from the documented endpoint.
+
+        `GET /v1/project/getUserProfileDtos/{space}` is what the API documents for this, and it
+        is what this client used to call. Against the live instance it answers 200 with an empty
+        list for EVERY space — including one whose owner is the very account asking. It does not
+        fail; it silently reports that nobody is there, and the assignee select rendered empty
+        with no error anywhere. That is the bug this replaced.
+
+        The matrix answers properly. `applicationMnemo` is a required path segment that the spec
+        documents as "Мнемоника приложения" and never gives a single value for; "JAGA" is the one
+        the instance accepts.
+
+        It is still tried the documented way first — but only as a fallback, when the matrix
+        itself errors (an instance that names its application something else). An EMPTY matrix is
+        taken at face value: a space really can have no members, and quietly falling back on a
+        second empty answer would only hide it again.
+        """
+        try:
+            return self._fetch_matrix_members(space_id)
+        except JagaApiError:
+            logger.warning(
+                "jaga.client.role_matrix_unavailable",
+                extra={"space_id": space_id, "application_mnemo": APPLICATION_MNEMO},
+                exc_info=True,
+            )
+
         payload = self._authed("GET", f"/v1/project/getUserProfileDtos/{space_id}")
         items = payload if isinstance(payload, list) else []
-        users: list[tuple[str, str]] = []
-        for item in items:
-            person_uuid = item.get("personUuid")
-            if not person_uuid or not item.get("canBeAssign") or item.get("isBlocked"):
-                continue
-            users.append((str(person_uuid), str(item.get("displayName") or person_uuid)))
-        return users
+        return [
+            item
+            for item in items
+            if item.get("canBeAssign") and not item.get("isBlocked") and item.get("email")
+        ]
+
+    def _fetch_matrix_members(self, space_id: int) -> list[dict[str, Any]]:
+        """Every page of the user-role matrix, flattened to the people in it.
+
+        The matrix is a page of ROLES, each carrying the users that hold it, so one person shows
+        up once per role they have — hence the dedupe. Groups are dropped: a group cannot be the
+        executor of a task, and `find_person_by_email` would never resolve one.
+
+        Every member here carries `id`, and that id is the TEAM id, not the Core id (see
+        `Person`). Nothing reads it: the email is what travels.
+        """
+        by_email: dict[str, dict[str, Any]] = {}
+        page = 0
+        while page < MAX_MEMBER_PAGES:
+            payload = self._authed(
+                "GET",
+                f"/v1/team/userRoles/applications/{APPLICATION_MNEMO}/projects/{space_id}",
+                params={"page": page, "size": DEFAULT_PAGE_SIZE},
+            )
+            for row in payload.get("content", []):
+                for entry in row.get("usersRoles", []):
+                    user = entry.get("user") or {}
+                    email = user.get("email")
+                    if email and not user.get("isGroup") and user.get("type") == "USER":
+                        by_email.setdefault(str(email), user)
+
+            page += 1
+            if page >= int(payload.get("totalPages") or 0):
+                break
+        else:
+            logger.warning(
+                "jaga.client.member_list_truncated",
+                extra={"space_id": space_id, "pages_read": MAX_MEMBER_PAGES},
+            )
+        return list(by_email.values())
+
+    def find_person_by_email(self, email: str) -> Person | None:
+        """The one door to a person's UUID. Returns None when Jaga knows no such email.
+
+        Jaga answers an unknown email with HTTP 400 (`NotFoundException`, "User with email ...
+        does not exists") — a 400 that means "not found", not "bad request". Both 400 and 404 are
+        therefore a normal, expected outcome and not an error: a Sentry user simply may not exist
+        in Jaga. Every other status still raises.
+
+        A person's UUID never changes, so the answer is cached for an hour. Without the cache
+        this would be one HTTP call per assignee sync and per task create.
+        """
+        address = email.strip()
+        if not address:
+            return None
+
+        key = f"{self._person_cache_prefix}:{hashlib.sha256(address.lower().encode()).hexdigest()}"
+        cached = self._cache.get(key)
+        if cached is not None:
+            # A miss is cached too — as {} — so a Sentry user with no Jaga account does not cost
+            # a round trip on every single assignment.
+            return Person.from_api(cached) if cached else None
+
+        try:
+            payload = self._authed(
+                "POST", "/v1/team/userProfile/findByMailOrName", json={"searchText": address}
+            )
+        except JagaApiError as exc:
+            if exc.status_code not in (400, 404):
+                raise
+            self._cache.set(key, {}, timeout=PERSON_CACHE_TTL)
+            return None
+
+        if not isinstance(payload, dict) or not payload.get("uuid"):
+            return None
+        self._cache.set(key, payload, timeout=PERSON_CACHE_TTL)
+        return Person.from_api(payload)
+
+    def set_task_assignees(self, task_id: int, field_id: int, person_uuids: list[str]) -> None:
+        """Set (or clear) the people a task is assigned to.
+
+        This is an attribute write, not a role change. `PUT /v1/taskRole/task/{id}/executor` is
+        what the spec offers for this and it DOES NOT EXIST on the instance — it 404s with
+        `No static resource taskAssignee/task/.../executor`, i.e. Spring has no handler for that
+        route at all. The assignee is the ordinary EAV attribute `task.assignee_uuid`, and
+        `PATCH /v1/task/{taskId}` takes exactly the cell the create already builds.
+
+        Verified against a live instance: the value travels as a LIST (the attribute is
+        `multiple`), and writing it fills the task's top-level `executors` too — the attribute IS
+        what Jaga's UI calls the executor. An empty list clears the field, which is what an
+        unassignment in Sentry has to do.
+        """
+        self._authed(
+            "PATCH",
+            f"/v1/task/{task_id}",
+            json={
+                "fieldId": field_id,
+                "value": person_uuids,
+                "referenceValue": True,
+                "addInfo": {},
+                "objectTypeNameM": ASSIGNEE_OBJECT_TYPE,
+            },
+        )
 
     def get_space_statuses(self, space_id: int) -> list[Status]:
         """The statuses reachable inside one space, with a short-lived cache.

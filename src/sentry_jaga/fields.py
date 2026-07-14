@@ -16,7 +16,10 @@ only when we can tell what its values *are*:
 * `task.task_title` -> `string`, pre-filled with the Sentry issue title;
 * `task.content` -> `textarea`, pre-filled with the Sentry context;
 * anything with a `dictionaryId` -> `select` over `/v1/listRef/{id}/any`;
-* `task.assignee_uuid` -> `select` over the members of the space (values are person UUIDs);
+* `task.assignee_uuid` -> `select` over the members of the space. Its values are EMAILS, not the
+  person UUIDs the attribute itself stores: a UUID costs one HTTP call per person, so they are
+  resolved at submit time for whoever was picked rather than for every member at render time.
+  See `JagaClient.get_space_users` and `issue_config.resolve_assignee_cells`;
 * `task.label_id` -> `select` over the labels (values are label ids).
 
 `SPACE_OBJECT_TYPE` / `TYPE_OBJECT_TYPE` are a special case: Jaga rejects a create that omits

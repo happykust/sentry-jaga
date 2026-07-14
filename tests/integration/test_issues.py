@@ -89,15 +89,40 @@ ATTRS_RESPONSE = {
         }
     ],
 }
-USERS_RESPONSE = [
-    {
-        "id": 1,
-        "personUuid": "uuid-1",
-        "displayName": "Ivanov Ivan",
-        "canBeAssign": True,
-        "isBlocked": False,
-    }
-]
+# The members of a space come from the user-role matrix, NOT from the documented
+# `getUserProfileDtos` — that one answers 200 with `[]` for every space on a live instance, which
+# is what used to leave the assignee select silently empty. The matrix carries no person UUID, so
+# the select's value is the email and the UUID is resolved at submit time (`PERSON_RESPONSE`).
+MATRIX_RESPONSE = {
+    "content": [
+        {
+            "rolesList": [],
+            "usersRoles": [
+                {
+                    "user": {
+                        # The TEAM id, despite the name. The Core id is a different number.
+                        "id": 365474,
+                        "displayName": "Ivanov Ivan",
+                        "email": "ivanov@example.com",
+                        "isGroup": False,
+                        "type": "USER",
+                    },
+                    "roles": [],
+                }
+            ],
+        }
+    ],
+    "totalPages": 1,
+    "pageNumber": 0,
+    "totalElements": 1,
+}
+PERSON_RESPONSE = {
+    "coreId": 193688,
+    "teamId": 365474,
+    "uuid": "uuid-1",
+    "mail": "ivanov@example.com",
+    "fullName": "Ivanov Ivan",
+}
 LABELS_RESPONSE = {
     "content": [{"id": 7, "uuid": "u7", "color": "#fff", "name": "backend", "projects": []}],
     "totalPages": 1,
@@ -171,7 +196,14 @@ class JagaIssuesTest(APITestCase):
                 "items": [{"id": 1, "value": "High", "orderNum": 0}],
             },
         )
-        responses.add(responses.GET, f"{API}/v1/project/getUserProfileDtos/1", json=USERS_RESPONSE)
+        responses.add(
+            responses.GET,
+            f"{API}/v1/team/userRoles/applications/JAGA/projects/1",
+            json=MATRIX_RESPONSE,
+        )
+        responses.add(
+            responses.POST, f"{API}/v1/team/userProfile/findByMailOrName", json=PERSON_RESPONSE
+        )
         responses.add(responses.POST, f"{API}/v1/labels/getPage", json=LABELS_RESPONSE)
 
     @responses.activate
@@ -192,7 +224,8 @@ class JagaIssuesTest(APITestCase):
         assert by_name["title"]["default"] == "Login is broken"
         assert "Sentry issue:" in by_name["description"]["default"]
         assert by_name["attr_110"]["choices"] == [("1", "High")]
-        assert by_name["attr_103"]["choices"] == [("uuid-1", "Ivanov Ivan")]
+        # The email, not the UUID: see `MATRIX_RESPONSE`.
+        assert by_name["attr_103"]["choices"] == [("ivanov@example.com", "Ivanov Ivan")]
         assert by_name["attr_104"]["choices"] == [("7", "backend")]
 
         # The cascade selects already ask for the space and the type; the author is Jaga's to

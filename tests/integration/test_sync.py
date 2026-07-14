@@ -13,6 +13,7 @@ from sentry.silo.base import SiloMode
 from sentry.testutils.cases import APITestCase
 from sentry.testutils.silo import assume_test_silo_mode
 from sentry.types.activity import ActivityType
+from sentry.users.services.user.service import user_service
 
 from sentry_jaga.issue_config import (
     CATEGORY_DONE,
@@ -34,6 +35,15 @@ AUTH_OK = {
 
 SPACE_ID = 11361
 TASK_ID = 500
+# The id of the `task.assignee_uuid` cell on the task (867868 on the live instance).
+ASSIGNEE_FIELD_ID = 867868
+PERSON = {
+    "coreId": 193688,
+    "teamId": 365474,
+    "uuid": "aea8739a-c7dc-49c3-b1e5-5bc909ef364f",
+    "mail": "ivanov@example.com",
+    "fullName": "Ivanov Ivan",
+}
 
 # The statuses of a real space, and the ids Jaga gave them. Names kept verbatim.
 TODO_ID = 107391
@@ -62,6 +72,9 @@ def _raw_task(transitions: list[int] | None = None) -> dict[str, object]:
         "attributes": [
             {"fieldId": 90, "value": SPACE_ID, "objectTypeNameM": "task.project_id"},
             {"fieldId": 100, "value": "Login is broken", "objectTypeNameM": "task.task_title"},
+            # The assignee is an attribute like any other, and the cell carries its own `fieldId`
+            # — which is what spares the sync a second round trip to the task type.
+            {"fieldId": ASSIGNEE_FIELD_ID, "value": [], "objectTypeNameM": "task.assignee_uuid"},
         ],
     }
 
@@ -121,6 +134,7 @@ class JagaSyncTest(APITestCase):
             responses.POST, f"{API}/v1/task/updateTaskStatusAndFields", json={}, status=202
         )
         responses.add(responses.POST, f"{API}/v1/comment", json={"id": 1, "taskId": TASK_ID})
+        responses.add(responses.PATCH, f"{API}/v1/task/{TASK_ID}", json={"id": TASK_ID})
 
     @staticmethod
     def _calls(path: str) -> list[dict[str, object]]:
@@ -141,6 +155,7 @@ class JagaSyncTest(APITestCase):
 
         assert set(fields) == {
             "sync_status_forward",
+            "sync_assignee_forward",
             "resolved_status_category",
             "unresolved_status_category",
             "comment_on_status_change",
@@ -294,11 +309,108 @@ class JagaSyncTest(APITestCase):
         assert fields["sync_comments"]["default"] is False
         assert self.installation.should_sync("comment") is False
 
-    def test_only_the_syncs_we_implement_are_ever_on(self) -> None:
-        """`should_sync` is asked about assignees and inbound status too; neither is implemented,
-        and a True there would have Sentry queue work that silently does nothing."""
-        for attribute in ("outbound_assignee", "inbound_assignee", "inbound_status"):
+    def test_the_inbound_syncs_can_never_be_switched_on(self) -> None:
+        """Jaga -> Sentry needs webhooks, which this version does not have. A True here would have
+        Sentry queue work that silently does nothing."""
+        for attribute in ("inbound_assignee", "inbound_status"):
             assert self.installation.should_sync(attribute) is False
+
+    def test_assignee_sync_is_off_until_an_admin_asks_for_it(self) -> None:
+        """It puts a named human on a ticket in another system, and notifies them. The rendered
+        default and the `should_sync` fallback are separate literals that have to agree."""
+        fields = {field["name"]: field for field in self.installation.get_organization_config()}
+
+        assert fields["sync_assignee_forward"]["default"] is False
+        assert self.installation.should_sync("outbound_assignee") is False
+
+        self._configure(sync_assignee_forward=True)
+        assert self.installation.should_sync("outbound_assignee") is True
+
+    @responses.activate
+    def test_sync_assignee_outbound_puts_the_sentry_assignee_on_the_task(self) -> None:
+        """Sentry and Jaga are matched by email; the UUID behind it is what Jaga stores.
+
+        The email asserted here is the RpcUser's own — NOT one this test planted. `RpcUser.emails`
+        is built from the `UserEmail` table, not from `User.email`, so overwriting the latter
+        would change what the assertion reads without changing what the code sends: the test
+        would go green while checking nothing.
+        """
+        self._mock_jaga()
+        responses.add(responses.POST, f"{API}/v1/team/userProfile/findByMailOrName", json=PERSON)
+        rpc_user = user_service.get_user(user_id=self.user.id)
+        assert rpc_user is not None
+
+        self.installation.sync_assignee_outbound(self.external_issue, rpc_user, assign=True)
+
+        assert self._calls("/v1/team/userProfile/findByMailOrName") == [
+            {"searchText": next(iter(rpc_user.emails))}
+        ], "the Sentry user's own address is the key the two systems are matched on"
+        assert self._calls(f"/v1/task/{TASK_ID}") == [
+            {
+                "fieldId": ASSIGNEE_FIELD_ID,
+                "value": [PERSON["uuid"]],
+                "referenceValue": True,
+                "addInfo": {},
+                "objectTypeNameM": "task.assignee_uuid",
+            }
+        ]
+
+    @responses.activate
+    def test_sync_assignee_outbound_clears_the_task_when_the_issue_is_unassigned(self) -> None:
+        """Verified against a live instance: an empty list is how Jaga is told "nobody"."""
+        self._mock_jaga()
+
+        self.installation.sync_assignee_outbound(
+            self.external_issue, user_service.get_user(user_id=self.user.id), assign=False
+        )
+
+        assert self._calls(f"/v1/task/{TASK_ID}")[0]["value"] == []
+        assert not [c for c in responses.calls if "findByMailOrName" in c.request.url], (
+            "unassigning asks Jaga about nobody"
+        )
+
+    @responses.activate
+    def test_assigning_a_sentry_issue_to_a_team_clears_the_jaga_assignee(self) -> None:
+        """Sentry can assign an issue to a TEAM, and passes `user=None` when it does. A Jaga task
+        is assigned to people — so rather than guessing which member of the team to name, the
+        field is cleared."""
+        self._mock_jaga()
+
+        self.installation.sync_assignee_outbound(self.external_issue, None, assign=True)
+
+        assert self._calls(f"/v1/task/{TASK_ID}")[0]["value"] == []
+
+    @responses.activate
+    def test_a_sentry_user_who_does_not_exist_in_jaga_leaves_the_task_alone(self) -> None:
+        """Jaga answers an unknown email with 400 (`NotFoundException`). Someone who works in
+        Sentry but not in Jaga is the normal case — and clearing the assignee would be worse than
+        doing nothing: it would take a real person off a real task."""
+        self._mock_jaga()
+        responses.add(
+            responses.POST,
+            f"{API}/v1/team/userProfile/findByMailOrName",
+            json={"error": "User with email x does not exists"},
+            status=400,
+        )
+
+        self.installation.sync_assignee_outbound(
+            self.external_issue, user_service.get_user(user_id=self.user.id), assign=True
+        )
+
+        assert self._calls(f"/v1/task/{TASK_ID}") == [], "the task keeps whoever it had"
+
+    @responses.activate
+    def test_jaga_being_down_does_not_stop_someone_being_assigned_in_sentry(self) -> None:
+        """As with the status sync: the Jaga half is a courtesy, and it must not take the Sentry
+        half down with it."""
+        responses.add(responses.POST, f"{API}/v1/auth/login", json=AUTH_OK, status=200)
+        responses.add(
+            responses.GET, f"{API}/v1/task/findExtendedWithFlexField/code/PLT-500", status=500
+        )
+
+        self.installation.sync_assignee_outbound(
+            self.external_issue, user_service.get_user(user_id=self.user.id), assign=True
+        )
 
     @responses.activate
     def test_create_comment_posts_the_note_attributed_to_its_author(self) -> None:

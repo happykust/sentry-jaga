@@ -1,10 +1,11 @@
 import logging
+import re
 from typing import Any
 
 import pytest
 
 from sentry_jaga.client.exceptions import JagaError
-from sentry_jaga.client.models import Attribute, Project, Status, TaskRef, TaskType
+from sentry_jaga.client.models import Attribute, Person, Project, Status, TaskRef, TaskType
 from sentry_jaga.fields import (
     ASSIGNEE_OBJECT_TYPE,
     CREATE_TS_OBJECT_TYPE,
@@ -24,7 +25,9 @@ from sentry_jaga.issue_config import (
     MIN_QUERY_LENGTH,
     PERSISTED_FIELDS,
     NoProjectsError,
+    apply_assignee_sync,
     apply_status_sync,
+    assignee_field_id,
     attach_event_json,
     build_create_config,
     build_link_config,
@@ -75,7 +78,19 @@ REAL_ATTRIBUTES = [
     SEVERITY,
 ]
 
-USERS = [("uuid-1", "Ivanov Ivan"), ("uuid-2", "Petrov Petr")]
+# The assignee select carries EMAILS, not the person UUIDs the attribute finally stores: a UUID
+# costs one HTTP call per person (`find_person_by_email` is the only endpoint that returns one),
+# so they are resolved for whoever was picked at submit time, not for every member at render
+# time. `PEOPLE` is the Jaga directory the fake resolves them against.
+USERS = [("ivanov@example.com", "Ivanov Ivan"), ("petrov@example.com", "Petrov Petr")]
+PEOPLE = {
+    "ivanov@example.com": Person(
+        uuid="uuid-1", core_id=193688, team_id=365474, email="ivanov@example.com", name="Ivanov"
+    ),
+    "petrov@example.com": Person(
+        uuid="uuid-2", core_id=193689, team_id=365475, email="petrov@example.com", name="Petrov"
+    ),
+}
 LABELS = [("7", "backend"), ("8", "frontend")]
 # The id a live Jaga answered `POST /v1/labels/list {"names": ["sentry"]}` with.
 AUTO_LABEL_ID = 17834
@@ -99,12 +114,17 @@ def raw_task(
     space_id: Any = SPACE_ID,
     transitions: list[Any] | None = None,
     with_space: bool = True,
+    with_assignee: bool = True,
 ) -> dict[str, Any]:
     """A task as `findExtendedWithFlexField` returns it: the space is an ordinary attribute,
     and the statuses it can move to are listed on the task itself."""
     attributes: list[dict[str, Any]] = [
         {"fieldId": 100, "value": "Login is broken", "objectTypeNameM": TITLE_OBJECT_TYPE}
     ]
+    if with_assignee:
+        # A task's own cells carry their `fieldId` — which is how the assignee sync gets the id it
+        # needs to PATCH, without a second round trip to the task type.
+        attributes.append({"fieldId": 103, "value": [], "objectTypeNameM": ASSIGNEE_OBJECT_TYPE})
     if with_space:
         attributes.append({"fieldId": 90, "value": space_id, "objectTypeNameM": SPACE_OBJECT_TYPE})
     return {
@@ -149,6 +169,8 @@ class FakeClient:
         self.tasks_fetched: list[str] = []
         self.labels_resolved: list[str] = []
         self.attachments: list[tuple[int, int, str, bytes, str]] = []
+        self.people_resolved: list[str] = []
+        self.assignees_set: list[tuple[int, int, list[str]]] = []
 
     def get_projects(self) -> list[Project]:
         return self._projects
@@ -168,6 +190,13 @@ class FakeClient:
     def get_space_users(self, space_id: int) -> list[tuple[str, str]]:
         self.users_requested.append(space_id)
         return USERS
+
+    def find_person_by_email(self, email: str) -> Person | None:
+        self.people_resolved.append(email)
+        return PEOPLE.get(email)
+
+    def set_task_assignees(self, task_id: int, field_id: int, person_uuids: list[str]) -> None:
+        self.assignees_set.append((task_id, field_id, person_uuids))
 
     def get_labels(self) -> list[tuple[str, str]]:
         self.labels_requested += 1
@@ -497,7 +526,9 @@ def test_create_task_from_form_sends_attributes() -> None:
     assert _cell(payload, 110) is not None
 
 
-def test_create_task_from_form_sends_assignees_and_labels_as_references() -> None:
+def test_create_task_from_form_swaps_the_chosen_emails_for_uuids() -> None:
+    """The select submits emails; Jaga stores UUIDs. Only the people actually picked are looked
+    up — one call each, at submit — instead of every member of the space at render time."""
     client = FakeClient()
     create_task_from_form(
         client,
@@ -505,7 +536,7 @@ def test_create_task_from_form_sends_assignees_and_labels_as_references() -> Non
             "project": "1",
             "issue_type": "10",
             "title": "Login is broken",
-            "attr_103": ["uuid-1", "uuid-2"],
+            "attr_103": ["ivanov@example.com", "petrov@example.com"],
             "attr_104": ["7"],
         },
     )
@@ -517,11 +548,40 @@ def test_create_task_from_form_sends_assignees_and_labels_as_references() -> Non
     assert assignee is not None
     assert assignee["value"] == ["uuid-1", "uuid-2"]
     assert assignee["referenceValue"] is True
+    assert client.people_resolved == ["ivanov@example.com", "petrov@example.com"]
 
     label = _cell(payload, 104)
     assert label is not None
     assert label["value"] == ["7"]
     assert label["referenceValue"] is True
+
+
+def test_create_task_from_form_refuses_an_assignee_jaga_does_not_know() -> None:
+    """Filing the task without the person the user deliberately picked would be a silent lie; and
+    sending an email where a UUID belongs makes Jaga refuse the whole create with a message about
+    a field the user cannot even see. Name who could not be found instead."""
+    client = FakeClient()
+
+    with pytest.raises(JagaError, match=re.escape("ghost@example.com")):
+        create_task_from_form(
+            client,
+            {
+                "project": "1",
+                "issue_type": "10",
+                "title": "Login is broken",
+                "attr_103": ["ghost@example.com"],
+            },
+        )
+
+    assert client.created is None, "nothing may be filed when the assignee cannot be resolved"
+
+
+def test_create_task_from_form_costs_no_lookup_when_nobody_was_picked() -> None:
+    """The common case: a task filed with no assignee must not talk to the user directory."""
+    client = FakeClient()
+    create_task_from_form(client, {"project": "1", "issue_type": "10", "title": "Login is broken"})
+
+    assert client.people_resolved == []
 
 
 def test_create_task_from_form_rejects_empty_form() -> None:
@@ -1178,3 +1238,72 @@ def test_edit_task_comment_rewrites_the_comment_it_is_given() -> None:
 
     assert client.updated_comments == [(901, TASK_ID, "Ivan wrote:\n\n> hello again")]
     assert client.comments == []
+
+
+# --- assignee sync, Sentry -> Jaga -----------------------------------------
+
+
+def test_apply_assignee_sync_writes_the_uuid_of_the_first_email_jaga_knows() -> None:
+    """Sentry allows a user several addresses and cannot know which one Jaga has them under, so
+    every one is tried in turn. The `fieldId` comes off the task's own cell — no extra call."""
+    client = FakeClient()
+
+    result = apply_assignee_sync(
+        client, "PLT-500", ["unknown@example.com", "ivanov@example.com"], assign=True
+    )
+
+    assert result == "assigned"
+    assert client.assignees_set == [(TASK_ID, 103, ["uuid-1"])]
+    assert client.people_resolved == ["unknown@example.com", "ivanov@example.com"]
+
+
+def test_apply_assignee_sync_stops_at_the_first_address_that_resolves() -> None:
+    """A hit must not go on asking Jaga about the addresses behind it."""
+    client = FakeClient()
+
+    apply_assignee_sync(
+        client, "PLT-500", ["ivanov@example.com", "petrov@example.com"], assign=True
+    )
+
+    assert client.people_resolved == ["ivanov@example.com"]
+    assert client.assignees_set == [(TASK_ID, 103, ["uuid-1"])]
+
+
+def test_apply_assignee_sync_clears_the_field_when_unassigning() -> None:
+    """Verified against a live instance: an empty list is how Jaga is told "nobody"."""
+    client = FakeClient()
+
+    result = apply_assignee_sync(client, "PLT-500", ["ivanov@example.com"], assign=False)
+
+    assert result == "unassigned"
+    assert client.assignees_set == [(TASK_ID, 103, [])]
+    assert client.people_resolved == [], "unassigning asks Jaga about nobody"
+
+
+def test_apply_assignee_sync_leaves_the_task_alone_for_a_user_jaga_never_heard_of() -> None:
+    """Someone who works in Sentry but not in Jaga is the normal case, not an error. Clearing the
+    assignee would be worse than doing nothing: it would take a real person off a real task."""
+    client = FakeClient()
+
+    result = apply_assignee_sync(client, "PLT-500", ["ghost@example.com"], assign=True)
+
+    assert result == "no_such_user"
+    assert client.assignees_set == [], "the task keeps whoever it had"
+
+
+def test_apply_assignee_sync_is_a_no_op_when_the_type_has_no_assignee_attribute() -> None:
+    """Not every task type carries `task.assignee_uuid`, and there is then nothing to PATCH."""
+    client = FakeClient(task=raw_task(with_assignee=False))
+
+    result = apply_assignee_sync(client, "PLT-500", ["ivanov@example.com"], assign=True)
+
+    assert result == "no_attribute"
+    assert client.assignees_set == []
+    assert client.people_resolved == [], "no attribute means not even a lookup is worth paying for"
+
+
+def test_assignee_field_id_is_read_off_the_task_itself() -> None:
+    """A task's cells carry their own `fieldId`, which is what spares the sync a round trip to the
+    task type. Verified against a live instance (fieldId=867868 there)."""
+    assert assignee_field_id(raw_task()) == 103
+    assert assignee_field_id(raw_task(with_assignee=False)) is None

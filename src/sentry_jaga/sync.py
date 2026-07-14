@@ -44,9 +44,8 @@ class JagaSyncMixin(JagaIssuesMixin, IssueSyncIntegration):
     # `create_comment` / `update_comment` background tasks on `should_sync("comment")`, which
     # reads the config under the key named here.
     comment_key = "sync_comments"
-    # Assignee sync and inbound sync (Jaga -> Sentry webhooks) are not supported in this
-    # version.
-    outbound_assignee_key = None
+    outbound_assignee_key = "sync_assignee_forward"
+    # Inbound sync (Jaga -> Sentry webhooks) is not supported in this version.
     inbound_status_key = None
     inbound_assignee_key = None
 
@@ -64,7 +63,16 @@ class JagaSyncMixin(JagaIssuesMixin, IssueSyncIntegration):
     # discussion — it can name a customer, a credential, a suspect commit — and forwarding it to
     # a tracker with a different audience is a decision for an admin to take on purpose, not a
     # surprise to discover afterwards.
-    SYNC_DEFAULTS: ClassVar[dict[str, bool]] = {"outbound_status": True, "comment": False}
+    #
+    # Assignee sync defaults OFF for a plainer reason: it puts a named human on a ticket in
+    # another system, which notifies them and makes them accountable for it. Sentry's idea of who
+    # owns an issue is not automatically the right answer inside Jaga, where the space may have a
+    # duty roster of its own. Whoever wants the two to agree can say so.
+    SYNC_DEFAULTS: ClassVar[dict[str, bool]] = {
+        "outbound_status": True,
+        "comment": False,
+        "outbound_assignee": False,
+    }
 
     def should_sync(self, attribute: str, sync_source: Any = None) -> bool:
         if attribute not in self.SYNC_DEFAULTS:
@@ -140,6 +148,20 @@ class JagaSyncMixin(JagaIssuesMixin, IssueSyncIntegration):
                     "attribute is filed without one."
                 ),
                 "default": issue_config.DEFAULT_AUTO_LABEL,
+            },
+            {
+                "name": self.outbound_assignee_key,
+                "type": "boolean",
+                "label": "Sync assignment to Jaga",
+                "help": (
+                    "Put the Sentry issue's assignee on the linked Jaga task, and take them off "
+                    "it again when the issue is unassigned. The two are matched by email address; "
+                    "a Sentry user with no Jaga account is skipped, and the task keeps whoever it "
+                    "had. Assigning a Sentry issue to a team clears the Jaga assignee, because a "
+                    "task is assigned to people. Off by default: this names a real person in "
+                    "another system and notifies them."
+                ),
+                "default": self.SYNC_DEFAULTS["outbound_assignee"],
             },
             {
                 "name": self.comment_key,
@@ -239,11 +261,39 @@ class JagaSyncMixin(JagaIssuesMixin, IssueSyncIntegration):
         assign: bool = True,
         **kwargs: Any,
     ) -> None:
-        # Abstract method of `IssueSyncIntegration`: without it the class stays abstract and
-        # Sentry cannot create an installation. Assignee sync is not supported
-        # (`outbound_assignee_key = None`, and `should_sync` returns False), so this is a
-        # no-op.
-        return None
+        """Put the Sentry issue's assignee on the Jaga task, or take them off it.
+
+        `user` is None when the issue was assigned to a TEAM, not to a person — Sentry's own sync
+        task passes it that way. A Jaga task is assigned to people, so a team assignment clears
+        the field rather than guessing which member of it to name.
+
+        Matching is by email, and every address the Sentry user has is tried: Sentry allows more
+        than one, and which of them Jaga knows the person by is not knowable in advance. A user
+        Jaga has never heard of is NOT an error — it is the normal case for anyone who works in
+        Sentry but not in Jaga — so the task simply keeps whoever it had.
+
+        Failures are swallowed, as in `sync_status_outbound`: Jaga being unreachable must not
+        stop someone being assigned an issue in Sentry.
+        """
+        emails = list(user.emails) if user is not None else []
+        try:
+            result = issue_config.apply_assignee_sync(
+                self.get_client(),
+                external_issue.key,
+                emails,
+                # No user means a team, which is nobody in Jaga's terms: an unassignment.
+                assign=assign and bool(emails),
+            )
+            logger.info(
+                "jaga.sync.assignee_outbound",
+                extra={"key": external_issue.key, "result": result},
+            )
+        except JagaError:
+            logger.warning(
+                "jaga.sync.assignee_outbound_failed",
+                extra={"key": external_issue.key},
+                exc_info=True,
+            )
 
     def get_resolve_sync_action(self, data: Mapping[str, Any]) -> ResolveSyncAction:
         # Inbound Jaga -> Sentry webhooks are not supported in this version.

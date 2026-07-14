@@ -37,6 +37,9 @@ status you configured (and, optionally, comments on it).
 - **Comment sync.** Notes written on a Sentry issue can be posted as comments on the linked
   Jaga task, attributed to their author; editing the note rewrites the comment it created. Off
   by default — see [Sync settings](#sync-settings).
+- **Assignee sync.** Assigning a Sentry issue to someone **puts them on the linked Jaga task**,
+  and unassigning takes them off it again. The two systems are matched by email address. Off by
+  default — see [Sync settings](#sync-settings).
 
 ## Compatibility
 
@@ -105,6 +108,7 @@ Organization Settings → Integrations → **Jaga** → Configure:
 | Status to move the task to when the Sentry issue is reopened | To do | The same, for a regression. |
 | Also comment on the task | on | Post a comment in addition to moving the task. A comment is posted regardless whenever the task could not be moved. |
 | Sync Sentry comments to Jaga | **off** | Post notes written on a Sentry issue as comments on the linked Jaga task, attributed to their author. |
+| Sync assignment to Jaga | **off** | Put the Sentry issue's assignee on the linked Jaga task, matched by email; unassigning takes them off it. |
 | Label to put on tasks created from Sentry | `sentry` | Every task the integration files carries this label. Empty box = no label. |
 | Attach the Sentry event to the task | **off** | Attach the JSON of the issue's latest event to the task, as a file. |
 
@@ -176,13 +180,21 @@ is cached in Sentry's Django cache.
   | Title (`task.task_title`) | text, pre-filled with the Sentry issue title | — |
   | Description (`task.content`) | textarea, pre-filled with the Sentry context | — |
   | Any attribute with a dictionary | select | `GET /v1/listRef/{dictionaryId}/any` |
-  | Assignees (`task.assignee_uuid`) | multi-select | `GET /v1/project/getUserProfileDtos/{projectId}` (blocked and non-assignable members are filtered out) |
+  | Assignees (`task.assignee_uuid`) | multi-select | `GET /v1/team/userRoles/applications/JAGA/projects/{projectId}` — the members of the space (groups are left out) |
   | Label (`task.label_id`) | multi-select | `POST /v1/labels/getPage` |
 
   The space and the task type are **not** shown as attributes — the cascade selects above
   already ask for them — but they are still submitted inside `attributes`, because Jaga
   rejects a create without them even though both ids are in the URL. The author and the
   creation date are filled in by Jaga.
+
+  **The assignee select carries emails, not the UUIDs Jaga stores.** Jaga keeps a person's
+  `personUuid` — the only thing `task.assignee_uuid` accepts — behind
+  `POST /v1/team/userProfile/findByMailOrName`, which resolves **one** person per call, and no
+  member list returns it. Filling a select of *N* members with UUIDs would therefore cost *N*
+  HTTP calls before the form could be drawn. So the email travels in the form, and the UUID is
+  fetched for whoever was actually picked, at submit — one call instead of *N*, and the answer is
+  cached for an hour.
 - **The label on every task from Sentry.** The name of the label is resolved to an id through
   `POST /v1/labels/list`, which is a get-or-create: the first task ever filed makes the label,
   every later one reuses it. The id is **merged** into the `Label` cell of the create, so labels
@@ -252,6 +264,22 @@ is cached in Sentry's Django cache.
   could have reached. Nothing is forced: the task is never pushed into a status its workflow
   does not allow.
 
+- **Assignee sync.** When a Sentry issue is assigned, the person is put on the linked task by
+  patching its assignee attribute (`PATCH /v1/task/{taskId}` with the `task.assignee_uuid` cell).
+  Unassigning writes an empty list, which is how Jaga is told "nobody".
+
+  Despite what the API spec suggests, the assignee is **not** a "task role": the documented
+  `PUT /v1/taskRole/task/{taskId}/executor` does not exist on a live instance — it answers 404
+  with `No static resource ...`, i.e. no handler at all. The assignee is an ordinary EAV
+  attribute, and writing it fills the task's `executors` as a consequence: it *is* what Jaga's
+  own UI shows as the executor.
+
+  Sentry and Jaga are matched **by email** — every address the Sentry user has is tried, and the
+  first one Jaga knows wins. A Sentry user who does not exist in Jaga is not an error: the task
+  simply keeps whoever it had, and a `jaga.sync.assignee_not_in_jaga` line is logged. Assigning
+  a Sentry issue to a **team** clears the Jaga assignee, because a Jaga task is assigned to
+  people and there is nobody to pick from a team.
+
 The issue ↔ task relation is held by Sentry's own models (`ExternalIssue` and `GroupLink`) —
 the package creates no tables of its own.
 
@@ -273,8 +301,19 @@ the package creates no tables of its own.
   the moment the rule was written, and every task the rule ever filed afterwards would get the
   event of that one long-dead issue attached to it. No field, no attachment — the honest outcome.
   Tasks created from an issue by hand are unaffected.
+- **Only the members of a space can be assigned, and only if the service account can see them.**
+  The assignee select is filled from the space's user-role matrix
+  (`GET /v1/team/userRoles/applications/JAGA/projects/{projectId}`). If it comes up empty, the
+  service account cannot read that space's membership — check its rights in Jaga.
+
+  The documented endpoint for this, `GET /v1/project/getUserProfileDtos/{projectId}`, is **not**
+  used: on a live instance it answers `200 []` for every space, including one the asking account
+  owns. It does not fail — it silently reports that nobody is there, which is exactly how an
+  empty assignee dropdown with no error anywhere came about in the first place. It is still tried
+  as a fallback, but only when the matrix itself errors.
 - **The sync is one-way, Sentry → Jaga.** Inbound Jaga → Sentry webhooks are not supported:
-  changes made on the Jaga side do not reach Sentry.
+  changes made on the Jaga side do not reach Sentry. In particular, the assignee sync only ever
+  writes: someone reassigned in Jaga is not reassigned in Sentry.
 - **The link suggestions do not show which space a task is in.** They read `code — title` and no
   more. Jaga's global search returns a found task's `projectId`, `projectCode` and `projectTitle`
   as `null` — the space simply is not in the answer — and reading it back would mean one extra

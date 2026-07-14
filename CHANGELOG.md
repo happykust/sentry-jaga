@@ -5,8 +5,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **The "Assignees" select was always empty, and said nothing about it.** It was filled from the
+  endpoint the API documents for exactly this — `GET /v1/project/getUserProfileDtos/{projectId}`
+  — which on a live instance answers `200 []` for *every* space, including one the asking
+  account owns. It does not fail: it silently reports that nobody is there. Nobody could ever be
+  assigned a task from Sentry, and no error was raised anywhere to say why.
+
+  The members now come from the space's user-role matrix
+  (`GET /v1/team/userRoles/applications/JAGA/projects/{projectId}`), which answers properly.
+  `applicationMnemo` is a required path segment the spec never gives a single value for; `JAGA`
+  is the one a live instance accepts. The old endpoint is kept only as a fallback, for when the
+  matrix itself errors — an *empty* matrix is taken at face value, since a space really can have
+  no members.
+
 ### Added
 
+- **Assignee sync (`Sync assignment to Jaga`, off by default).** Assigning a Sentry issue puts
+  the person on the linked Jaga task; unassigning takes them off it. The two systems are matched
+  by email: every address the Sentry user has is tried, and the first Jaga knows wins. A Sentry
+  user with no Jaga account is not an error — the task keeps whoever it had. Assigning a Sentry
+  issue to a **team** clears the Jaga assignee, because a Jaga task is assigned to people.
+
+  It is off by default because it names a real person in another system and notifies them, and
+  Sentry's idea of who owns an issue is not automatically the right answer inside Jaga.
+
+  The assignee turned out **not** to be the "task role" the spec advertises: the documented
+  `PUT /v1/taskRole/task/{taskId}/executor` does not exist on a live instance (404, `No static
+  resource ...` — no handler at all). It is an ordinary EAV attribute, written with
+  `PATCH /v1/task/{taskId}`, and writing it fills the task's `executors` as a consequence — the
+  attribute *is* what Jaga's UI calls the executor.
 - **Linking searches every space at once.** Typing part of a code or a title now finds the task
   wherever it lives (`POST /v1/globalSearch/findTaskList`) — Jaga's per-space search demands a
   `projectId`, which is why the link form used to make you pick a space first.

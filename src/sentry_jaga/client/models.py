@@ -134,3 +134,43 @@ class Status:
             name=str(payload.get("name") or ""),
             category=str(payload.get("categoryNameM") or ""),
         )
+
+
+@dataclass(frozen=True, slots=True)
+class Person:
+    """A Jaga user, and the reason this class exists at all: they have TWO numeric ids.
+
+    Jaga is two services behind one API, and each keeps its own id for the same human:
+
+    * `uuid`    — `personUuid`, the cross-system identifier. This, and nothing else, is what the
+                  `task.assignee_uuid` attribute takes. Assigning a task means writing this.
+    * `core_id` — "Идентификатор пользователя (Core)". What a task's `executors` are keyed by.
+    * `team_id` — "Идентификатор пользователя (Team)".
+
+    They are unrelated numbers for one person (on the instance this was written against: core
+    193688, team 365474). The trap is that the member list — the user-role matrix — returns the
+    *team* id in a field called plain `id`, so code that reads `member["id"]` and calls it "the
+    user id" is holding the wrong one and will not find out until Jaga 404s. Naming all three
+    here, once, is the fix: nothing downstream passes a bare int around.
+
+    Only `POST /v1/team/userProfile/findByMailOrName` hands back all three at once, keyed by
+    email — which is why an email is what the plugin carries between Sentry and Jaga.
+    """
+
+    uuid: str
+    core_id: int
+    team_id: int
+    email: str
+    name: str
+
+    @classmethod
+    def from_api(cls, payload: dict[str, Any]) -> Person:
+        """Build from a `UserProfileShortApiDto` — note it spells the email `mail`."""
+        email = str(payload.get("mail") or "")
+        return cls(
+            uuid=str(payload.get("uuid") or ""),
+            core_id=int(payload.get("coreId") or 0),
+            team_id=int(payload.get("teamId") or 0),
+            email=email,
+            name=str(payload.get("fullName") or email),
+        )

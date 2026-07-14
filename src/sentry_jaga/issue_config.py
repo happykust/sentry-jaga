@@ -13,6 +13,7 @@ multiple, updatesForm, help.
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from typing import Any
 
 from sentry_jaga.client.api import JagaClient
@@ -295,6 +296,10 @@ def create_task_from_form(
     if label and find_attribute(attributes, LABEL_OBJECT_TYPE) is not None:
         merge_auto_label(payload, attributes, client.get_or_create_label(label))
 
+    # The assignee select carries emails; Jaga wants UUIDs. Swapped here, for the one person who
+    # was actually picked, rather than for every member when the form was drawn.
+    resolve_assignee_cells(client, payload, attributes)
+
     # The space and the task type have no form field of their own, so nothing above produces
     # them — and Jaga answers 500 to a create that leaves them out of `attributes`, even
     # though both ids are right there in the URL. See `injected_attributes`.
@@ -315,6 +320,95 @@ def create_task_from_form(
         "description": "",
         "metadata": {"task_id": task.id},
     }
+
+
+def resolve_assignee_cells(
+    client: JagaClient, payload: list[dict[str, Any]], attributes: list[Attribute]
+) -> None:
+    """Turn the emails the assignee select submitted into the UUIDs Jaga stores. In place.
+
+    The select's values are emails and not UUIDs on purpose — see `JagaClient.get_space_users`:
+    a UUID costs one HTTP call *per person*, and paying that for every member of a space every
+    time the create form is drawn would hang the form. Here only the people who were actually
+    chosen are resolved, which is almost always exactly one.
+
+    An email Jaga does not know is a hard failure, not a silent drop. The user picked a person
+    on purpose; filing the task without them — or, worse, sending an email where a UUID belongs
+    and letting Jaga refuse the whole create with a message about a field the user cannot see —
+    is worse than saying who could not be found.
+    """
+    attr = find_attribute(attributes, ASSIGNEE_OBJECT_TYPE)
+    if attr is None:
+        return
+    cell = next((item for item in payload if item["fieldId"] == attr.id), None)
+    if cell is None:
+        return
+
+    raw = cell["value"]
+    emails = [str(item) for item in (raw if isinstance(raw, list) else [raw]) if str(item).strip()]
+
+    uuids: list[str] = []
+    for email in emails:
+        person = client.find_person_by_email(email)
+        if person is None:
+            raise JagaError(f"Jaga has no user with the email {email}.")
+        uuids.append(person.uuid)
+
+    # The attribute is `multiple` on every task type seen so far, and Jaga takes the value as a
+    # list — but `multiple` is a per-type flag, so a single-valued one is honoured too.
+    cell["value"] = uuids if attr.multiple else (uuids[0] if uuids else "")
+
+
+def assignee_field_id(raw_task: dict[str, Any]) -> int | None:
+    """The `fieldId` of a task's assignee attribute, read off the task itself.
+
+    A task's own attribute cells carry their `fieldId`, so the id needed to PATCH the assignee
+    comes free with the task the sync already fetched — no round trip to the task type. A type
+    without an assignee attribute at all returns None, and the sync then has nothing to write.
+    """
+    for raw in raw_task.get("attributes", []):
+        if raw.get("objectTypeNameM") == ASSIGNEE_OBJECT_TYPE:
+            field_id = raw.get("fieldId")
+            return int(field_id) if field_id is not None else None
+    return None
+
+
+def apply_assignee_sync(
+    client: JagaClient, task_code: str, emails: Sequence[str], *, assign: bool
+) -> str:
+    """Reflect a Sentry assignment on the linked Jaga task. Returns what it did.
+
+    `emails` are every address the Sentry user has — Sentry allows several, and which one Jaga
+    knows them by is not knowable in advance, so the first that resolves wins. Unassigning
+    (`assign=False`, or a user with no address Jaga knows) clears the field with an empty list,
+    which is what Jaga takes for "nobody".
+
+    Assigning a *team* is not a thing here: Sentry can assign an issue to a team, and Sentry's
+    own sync task calls this with `user=None` in that case, which lands as an unassignment.
+    """
+    raw_task = client.get_task_by_code(task_code)
+    field_id = assignee_field_id(raw_task)
+    if field_id is None:
+        # The type simply has no assignee attribute. Nothing is wrong, and nothing can be done.
+        logger.info("jaga.sync.assignee_attribute_absent", extra={"task_code": task_code})
+        return "no_attribute"
+
+    if not assign:
+        client.set_task_assignees(int(raw_task["id"]), field_id, [])
+        return "unassigned"
+
+    person = next(filter(None, (client.find_person_by_email(email) for email in emails)), None)
+    if person is None:
+        # Not an error: a Sentry user is under no obligation to exist in Jaga. Raising would make
+        # Sentry retry an assignment that can never succeed; the task keeps whoever it had.
+        logger.info(
+            "jaga.sync.assignee_not_in_jaga",
+            extra={"task_code": task_code, "email_count": len(emails)},
+        )
+        return "no_such_user"
+
+    client.set_task_assignees(int(raw_task["id"]), field_id, [person.uuid])
+    return "assigned"
 
 
 def _event_attachment_name(event_id: str) -> str:
