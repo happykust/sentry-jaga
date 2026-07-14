@@ -44,7 +44,7 @@ dev = [
     "pytest-cov>=5.0",
     "responses>=0.25",
     "ruff>=0.6",
-    "mypy>=1.11",
+    "mypy>=2.3.0",
     "types-requests",
     "pre-commit>=3.8",
     # Django only for the installation-form tests; at runtime it arrives with sentry. The <6
