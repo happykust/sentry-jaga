@@ -474,3 +474,42 @@ def apply_status_sync(
         client.create_comment(task_id, status_comment(is_resolved))
 
     return f"{task_code}: {action}, {'commented' if commented else 'no comment'}"
+
+
+def _task_id_for(client: JagaClient, task_code: str, task_id: int | None) -> int:
+    """Jaga's numeric id for a task, fetching it only when it is not already known.
+
+    Everything on the Sentry side is keyed by the task *code* (`ExternalIssue.key`) — the
+    comment endpoints want the numeric id. The id is recorded in `ExternalIssue.metadata` at
+    create and at link time (`create_task_from_form`, `get_task_summary`), so the caller can
+    usually hand it over; when it cannot — Sentry's comment tasks are given the key and nothing
+    else — the task is fetched for it.
+    """
+    if task_id is not None:
+        return int(task_id)
+    return int(client.get_task_by_code(task_code)["id"])
+
+
+def post_task_comment(
+    client: JagaClient, task_code: str, content: str, *, task_id: int | None = None
+) -> dict[str, Any]:
+    """Post a comment on a task and return it as Jaga created it.
+
+    The return value is not decoration: Sentry reads the new comment's id out of it
+    (`IssueBasicIntegration.get_comment_id` -> `comment["id"]`) and stores it on the note as
+    `external_id`. That id is the only handle `edit_task_comment` below has — without it, an
+    edited Sentry note would post a second comment instead of amending the first.
+    """
+    return client.create_comment(_task_id_for(client, task_code, task_id), content)
+
+
+def edit_task_comment(
+    client: JagaClient,
+    task_code: str,
+    comment_id: int,
+    content: str,
+    *,
+    task_id: int | None = None,
+) -> dict[str, Any]:
+    """Rewrite a comment previously posted by `post_task_comment`."""
+    return client.update_comment(int(comment_id), _task_id_for(client, task_code, task_id), content)

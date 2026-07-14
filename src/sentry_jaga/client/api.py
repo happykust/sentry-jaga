@@ -253,9 +253,36 @@ class JagaClient:
             json={"taskId": task_id, "targetStatusId": target_status_id, "formFields": []},
         )
 
-    def create_comment(self, task_id: int, content: str) -> None:
-        self._authed(
+    def create_comment(self, task_id: int, content: str) -> dict[str, Any]:
+        """Post a comment and return it as Jaga created it — `id` included.
+
+        The `id` is what makes an edit possible later: Sentry keeps it on the note and hands it
+        back to `update_comment` when the note is edited (see `issue_config.post_task_comment`).
+        Jaga answers a create with the whole `CommentApiDto`; the guard is for the day it
+        answers 200 with an empty body, which would otherwise blow up in the caller as a
+        `TypeError` on `dict(None)`.
+        """
+        payload = self._authed(
             "POST",
             "/v1/comment",
             json={"taskId": task_id, "contentComment": content, "attachIsPending": False},
         )
+        return dict(payload) if isinstance(payload, dict) else {}
+
+    def update_comment(self, comment_id: int, task_id: int, content: str) -> dict[str, Any]:
+        """Rewrite an existing comment.
+
+        `taskId` travels along with the id because Jaga's `CommentApiDto` declares it required
+        on the update as well as on the create — the endpoint takes the same schema both ways.
+        """
+        payload = self._authed(
+            "PUT",
+            "/v1/comment",
+            json={
+                "id": comment_id,
+                "taskId": task_id,
+                "contentComment": content,
+                "attachIsPending": False,
+            },
+        )
+        return dict(payload) if isinstance(payload, dict) else {}

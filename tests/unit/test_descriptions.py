@@ -1,4 +1,9 @@
-from sentry_jaga.descriptions import build_description, build_title
+from sentry_jaga.descriptions import (
+    UNKNOWN_AUTHOR,
+    build_description,
+    build_note_comment,
+    build_title,
+)
 
 URL = "https://sentry.example.com/organizations/acme/issues/42/"
 
@@ -30,3 +35,40 @@ def test_build_description_without_culprit() -> None:
     text = build_description(URL, "", "boom")
     assert URL in text
     assert "boom" in text
+
+
+# --- a Sentry note, as it lands on the Jaga task --------------------------------------------
+
+
+def test_note_comment_attributes_the_note_to_its_author() -> None:
+    """Without the attribution line every synced note would read as if the service account had
+    written it — three people discussing an incident would come out as one voice."""
+    text = build_note_comment("Ivanov Ivan", "Looks like a bad deploy")
+
+    assert text == "Ivanov Ivan wrote:\n\n> Looks like a bad deploy"
+
+
+def test_note_comment_quotes_every_line_of_a_multi_line_note() -> None:
+    """Notes are free-form and routinely multi-line. A single leading ">" would quote the first
+    line and leave the rest to run into the attribution as if it were Jaga's own text."""
+    text = build_note_comment("Ivan", "first\nsecond")
+
+    assert text == "Ivan wrote:\n\n> first\n> second"
+
+
+def test_note_comment_keeps_blank_lines_inside_the_quote() -> None:
+    """A blank line inside a quote must stay inside it: an unprefixed empty line ends a Markdown
+    blockquote, and the paragraph after it would fall out of the quotation."""
+    text = build_note_comment("Ivan", "first\n\nsecond")
+
+    assert text == "Ivan wrote:\n\n> first\n>\n> second"
+
+
+def test_note_comment_falls_back_when_the_author_is_unknown() -> None:
+    """A note can outlive the account that wrote it. An empty attribution ("wrote:") would read
+    as though Jaga itself spoke."""
+    assert build_note_comment("", "hi").startswith(f"{UNKNOWN_AUTHOR} wrote:")
+
+
+def test_note_comment_of_an_empty_note_is_just_the_attribution() -> None:
+    assert build_note_comment("Ivan", "") == "Ivan wrote:"

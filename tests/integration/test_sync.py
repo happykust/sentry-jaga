@@ -8,9 +8,11 @@ import responses
 from django.core.cache import cache
 from sentry.integrations.models.external_issue import ExternalIssue
 from sentry.integrations.models.organization_integration import OrganizationIntegration
+from sentry.models.activity import Activity
 from sentry.silo.base import SiloMode
 from sentry.testutils.cases import APITestCase
 from sentry.testutils.silo import assume_test_silo_mode
+from sentry.types.activity import ActivityType
 
 from sentry_jaga.issue_config import CATEGORY_DONE, CATEGORY_IN_PROGRESS, CATEGORY_TODO
 
@@ -75,8 +77,13 @@ class JagaSyncTest(APITestCase):
                 metadata={"instance_url": BASE, "email": "bot@example.com", "password": "secret"},
             )
             self.integration.add_organization(self.organization, self.user)
+            # The author of the notes below. `User` is a control-silo model, so naming it has to
+            # happen here — and it has to be named at all, or the attribution assertions would
+            # only be comparing the code against itself.
+            self.user.update(name="Ivanov Ivan")
 
         self.installation = self.integration.get_installation(self.organization.id)
+        self.group = self.create_group(project=self.project, message="Login is broken")
         self.external_issue = ExternalIssue.objects.create(
             organization_id=self.organization.id,
             integration_id=self.integration.id,
@@ -132,11 +139,13 @@ class JagaSyncTest(APITestCase):
             "resolved_status_category",
             "unresolved_status_category",
             "comment_on_status_change",
+            "sync_comments",
         }
         assert fields["sync_status_forward"]["default"] is True
         assert fields["resolved_status_category"]["default"] == CATEGORY_DONE
         assert fields["unresolved_status_category"]["default"] == CATEGORY_TODO
         assert fields["comment_on_status_change"]["default"] is True
+        assert fields["sync_comments"]["default"] is False
 
     def test_status_category_choices_are_offered_without_calling_jaga(self) -> None:
         """The settings page must render while Jaga is down — an org whose Jaga is unreachable
@@ -229,3 +238,108 @@ class JagaSyncTest(APITestCase):
         )
 
         assert self._calls("/v1/task/updateTaskStatusAndFields") == []
+
+    # --- Sentry notes -> Jaga comments ------------------------------------------------------
+    #
+    # Driven by Sentry's `create_comment` / `update_comment` background tasks, which hand the
+    # installation `external_issue.key` (the task CODE, not a database id), the id of the user who
+    # wrote the note, and the note itself.
+
+    def _note(self, text: str, external_id: object | None = None) -> Activity:
+        """A Sentry note, exactly as the background tasks load it: an `Activity` of type NOTE,
+        whose text lives in `data["text"]` and whose synced comment id lives in
+        `data["external_id"]`."""
+        data: dict[str, object] = {"text": text}
+        if external_id is not None:
+            data["external_id"] = external_id
+        return Activity.objects.create(
+            group=self.group,
+            project=self.project,
+            type=ActivityType.NOTE.value,
+            user_id=self.user.id,
+            data=data,
+        )
+
+    def test_comment_sync_is_off_until_an_admin_turns_it_on(self) -> None:
+        """Unlike the status sync, this one defaults OFF — as it does in every issue integration
+        upstream. A Sentry note is internal discussion and can name a customer or a credential;
+        forwarding it to a tracker with a different audience is a decision, not a surprise."""
+        assert self.installation.should_sync("comment") is False
+
+        self._configure(sync_comments=True)
+        assert self.installation.should_sync("comment") is True
+
+        self._configure(sync_comments=False)
+        assert self.installation.should_sync("comment") is False
+
+    def test_the_comment_checkbox_is_offered_and_its_default_matches_should_sync(self) -> None:
+        """The rendered default and the fallback in `should_sync` are two separate literals that
+        must agree: before the first save the config is empty, and a checkbox that reads "off"
+        while the sync is running (or the other way round) is a lie the first Save makes true."""
+        fields = {field["name"]: field for field in self.installation.get_organization_config()}
+
+        assert fields["sync_comments"]["default"] is False
+        assert self.installation.should_sync("comment") is False
+
+    def test_only_the_syncs_we_implement_are_ever_on(self) -> None:
+        """`should_sync` is asked about assignees and inbound status too; neither is implemented,
+        and a True there would have Sentry queue work that silently does nothing."""
+        for attribute in ("outbound_assignee", "inbound_assignee", "inbound_status"):
+            assert self.installation.should_sync(attribute) is False
+
+    @responses.activate
+    def test_create_comment_posts_the_note_attributed_to_its_author(self) -> None:
+        """The comment is created by the service account, so without the attribution line every
+        note in Jaga would look as though the bot had written it."""
+        self._mock_jaga()
+
+        comment = self.installation.create_comment(
+            "PLT-500", self.user.id, self._note("Looks like a bad deploy")
+        )
+
+        [posted] = self._calls("/v1/comment")
+        assert posted == {
+            "taskId": TASK_ID,
+            "contentComment": "Ivanov Ivan wrote:\n\n> Looks like a bad deploy",
+            "attachIsPending": False,
+        }
+        # The created comment must come back: `sentry.integrations.tasks.create_comment` reads its
+        # id out of the return value and stores it on the note as `external_id`. Without it, an
+        # edit of the note later has no comment to point at.
+        assert self.installation.get_comment_id(comment) == 1
+
+    @responses.activate
+    def test_create_comment_resolves_the_task_code_to_an_id(self) -> None:
+        """Sentry hands us `external_issue.key` — the task CODE. Jaga's comment API wants the
+        numeric id, and nothing on the Sentry side is given to us to look it up with."""
+        self._mock_jaga()
+
+        self.installation.create_comment("PLT-500", self.user.id, self._note("hi"))
+
+        assert [
+            c for c in responses.calls if "findExtendedWithFlexField/code/PLT-500" in c.request.url
+        ]
+        assert self._calls("/v1/comment")[0]["taskId"] == TASK_ID
+
+    @responses.activate
+    def test_update_comment_rewrites_the_comment_the_note_created(self) -> None:
+        """An edited note must amend its Jaga comment, not append a second one — which is why
+        `create_comment` had to return the comment in the first place."""
+        self._mock_jaga()
+        responses.add(responses.PUT, f"{API}/v1/comment", json={"id": 1, "taskId": TASK_ID})
+
+        self.installation.update_comment(
+            "PLT-500", self.user.id, self._note("Reworded", external_id=1)
+        )
+
+        puts = [c for c in responses.calls if c.request.method == "PUT"]
+        assert json.loads(puts[0].request.body) == {
+            "id": 1,
+            "taskId": TASK_ID,
+            "contentComment": "Ivanov Ivan wrote:\n\n> Reworded",
+            "attachIsPending": False,
+        }
+        # Nothing was POSTed: an edit does not create a comment.
+        assert [
+            c for c in responses.calls if c.request.method == "POST" and "comment" in c.request.url
+        ] == []

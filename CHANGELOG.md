@@ -18,6 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   a team that always files into one space no longer starts from the first space in the list
   every time. A remembered space that Jaga no longer offers the service account — archived, or
   access revoked — falls back to the first available one instead of breaking the form.
+- **Sentry notes can be synced to Jaga as comments** (`Sync Sentry comments to Jaga`,
+  **off by default**). A note is posted as `<Author> wrote:` followed by its quoted text, and
+  editing the note rewrites the comment it created rather than adding a second one. It is off
+  by default because a Sentry note is internal discussion and the Jaga task may have a wider
+  audience — the same default every issue integration in Sentry upstream uses.
 
 ### Changed
 

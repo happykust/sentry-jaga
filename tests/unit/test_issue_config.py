@@ -26,8 +26,10 @@ from sentry_jaga.issue_config import (
     build_create_config,
     build_link_config,
     create_task_from_form,
+    edit_task_comment,
     extract_space_id,
     get_task_summary,
+    post_task_comment,
     reachable_status_ids,
     resolve_target_status,
     search_task_summaries,
@@ -132,12 +134,14 @@ class FakeClient:
         self._statuses = SPACE_STATUSES if statuses is None else statuses
         self.created: dict[str, Any] | None = None
         self.comments: list[tuple[int, str]] = []
+        self.updated_comments: list[tuple[int, int, str]] = []
         self.searches: list[tuple[int, str]] = []
         self.attributes_requested: list[tuple[int, int]] = []
         self.users_requested: list[int] = []
         self.labels_requested = 0
         self.transitions: list[tuple[int, int]] = []
         self.statuses_requested: list[int] = []
+        self.tasks_fetched: list[str] = []
 
     def get_projects(self) -> list[Project]:
         return self._projects
@@ -173,6 +177,7 @@ class FakeClient:
         return TaskRef(id=500, code="PLT-500", title="")
 
     def get_task_by_code(self, code: str) -> dict[str, Any]:
+        self.tasks_fetched.append(code)
         task = dict(self._task) if self._task is not None else raw_task()
         task["code"] = code
         return task
@@ -181,8 +186,14 @@ class FakeClient:
         self.searches.append((project_id, text))
         return [TaskRef(id=5, code="PLT-5", title="Login is broken")]
 
-    def create_comment(self, task_id: int, content: str) -> None:
+    def create_comment(self, task_id: int, content: str) -> dict[str, Any]:
         self.comments.append((task_id, content))
+        # Jaga answers a create with the whole comment; Sentry reads `id` out of it.
+        return {"id": 900 + len(self.comments), "taskId": task_id, "contentComment": content}
+
+    def update_comment(self, comment_id: int, task_id: int, content: str) -> dict[str, Any]:
+        self.updated_comments.append((comment_id, task_id, content))
+        return {"id": comment_id, "taskId": task_id, "contentComment": content}
 
     def get_space_statuses(self, space_id: int) -> list[Status]:
         self.statuses_requested.append(space_id)
@@ -912,3 +923,39 @@ def test_persisted_field_names_are_the_names_the_form_actually_emits() -> None:
     names = {field["name"] for field in build_create_config(FakeClient(), {}, "t", "d")}
 
     assert set(PERSISTED_FIELDS) <= names
+
+
+# --- posting and editing comments ----------------------------------------------------------
+
+
+def test_post_task_comment_resolves_the_code_and_hands_back_the_created_comment() -> None:
+    """Sentry knows a task only by its code; the comment API wants the numeric id. And the
+    created comment must come back: Sentry stores its id on the note to be able to edit it."""
+    client = FakeClient()
+
+    comment = post_task_comment(client, "PLT-500", "Ivan wrote:\n\n> hello")
+
+    assert client.tasks_fetched == ["PLT-500"]
+    assert client.comments == [(TASK_ID, "Ivan wrote:\n\n> hello")]
+    assert comment["id"] == 901
+
+
+def test_post_task_comment_skips_the_lookup_when_the_id_is_already_known() -> None:
+    """The link path has just fetched the task and holds its id in `ExternalIssue.metadata`.
+    Fetching it again in the same request would be a second round trip for nothing."""
+    client = FakeClient()
+
+    post_task_comment(client, "PLT-500", "linked", task_id=TASK_ID)
+
+    assert client.tasks_fetched == []
+    assert client.comments == [(TASK_ID, "linked")]
+
+
+def test_edit_task_comment_rewrites_the_comment_it_is_given() -> None:
+    """An edited Sentry note must amend the Jaga comment it created, not add a second one."""
+    client = FakeClient()
+
+    edit_task_comment(client, "PLT-500", 901, "Ivan wrote:\n\n> hello again")
+
+    assert client.updated_comments == [(901, TASK_ID, "Ivan wrote:\n\n> hello again")]
+    assert client.comments == []

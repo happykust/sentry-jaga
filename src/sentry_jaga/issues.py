@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 
 
 @contextmanager
-def _as_integration_error() -> Iterator[None]:
+def as_integration_error() -> Iterator[None]:
     """Translate core errors into exceptions that Sentry understands."""
     try:
         yield
@@ -128,7 +128,7 @@ class JagaIssuesMixin(IssueBasicIntegration):
             if group is not None
             else {}
         )
-        with _as_integration_error():
+        with as_integration_error():
             return issue_config.build_create_config(
                 self.get_client(),
                 kwargs.get("params") or {},
@@ -138,7 +138,7 @@ class JagaIssuesMixin(IssueBasicIntegration):
             )
 
     def create_issue(self, data: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
-        with _as_integration_error():
+        with as_integration_error():
             return issue_config.create_task_from_form(self.get_client(), data)
 
     def _search_url(self, group: Group) -> str | None:
@@ -161,7 +161,7 @@ class JagaIssuesMixin(IssueBasicIntegration):
         return url
 
     def get_link_issue_config(self, group: Group, **kwargs: Any) -> list[dict[str, Any]]:
-        with _as_integration_error():
+        with as_integration_error():
             return issue_config.build_link_config(
                 self.get_client(),
                 kwargs.get("params") or {},
@@ -169,11 +169,11 @@ class JagaIssuesMixin(IssueBasicIntegration):
             )
 
     def get_issue(self, issue_id: str, **kwargs: Any) -> dict[str, Any]:
-        with _as_integration_error():
+        with as_integration_error():
             return issue_config.get_task_summary(self.get_client(), issue_id)
 
     def search_issues(self, query: str | None, **kwargs: Any) -> list[dict[str, Any]]:
-        with _as_integration_error():
+        with as_integration_error():
             return issue_config.search_task_summaries(
                 self.get_client(), kwargs.get("project_id"), query
             )

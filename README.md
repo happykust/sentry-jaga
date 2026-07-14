@@ -26,6 +26,9 @@ status you configured (and, optionally, comments on it).
   (and reopening it moves the task back); a comment can be posted on top. You map onto a status
   *category* — Done / In progress / To do — and the concrete status is resolved per task from
   the ones its own workflow allows.
+- **Comment sync.** Notes written on a Sentry issue can be posted as comments on the linked
+  Jaga task, attributed to their author; editing the note rewrites the comment it created. Off
+  by default — see [Sync settings](#sync-settings).
 
 ## Compatibility
 
@@ -83,16 +86,24 @@ The credentials are stored in Sentry's encrypted `Integration.metadata` field. C
 **dedicated service account** for the integration, with access only to the spaces you need
 to create tasks in: every task and comment will be created on its behalf.
 
-### Status sync settings
+### Sync settings
 
 Organization Settings → Integrations → **Jaga** → Configure:
 
 | Setting | Default | What it does |
 | --- | --- | --- |
-| Sync status to Jaga | on | Turns the whole sync on or off. |
+| Sync status to Jaga | on | Turns the whole status sync on or off. |
 | Status to move the task to when the Sentry issue is resolved | Done | The status **category** a resolve moves the task into. |
 | Status to move the task to when the Sentry issue is reopened | To do | The same, for a regression. |
 | Also comment on the task | on | Post a comment in addition to moving the task. A comment is posted regardless whenever the task could not be moved. |
+| Sync Sentry comments to Jaga | **off** | Post notes written on a Sentry issue as comments on the linked Jaga task, attributed to their author. |
+
+**Comment sync is off by default on purpose.** A Sentry note is internal discussion — it can
+name a customer, a credential or a suspect commit — and the Jaga task may have a wider audience
+than the Sentry issue. Forwarding it should be a decision an admin takes, not a surprise they
+discover. (Every issue integration in Sentry upstream defaults this the same way.) With it on, a
+note becomes a comment as `<Author> wrote:` followed by the quoted text, and editing the note
+rewrites that comment rather than adding another.
 
 The two category settings offer **Done**, **In progress** and **To do** — the categories Jaga
 groups all of its statuses under. One setting covers every space: the concrete status is picked

@@ -456,7 +456,7 @@ def test_search_tasks(client: JagaClient) -> None:
 def test_create_comment(client: JagaClient) -> None:
     _mock_login()
     responses.add(responses.POST, f"{API}/v1/comment", json={"id": 1, "taskId": 500}, status=200)
-    client.create_comment(task_id=500, content="Resolved in Sentry")
+    comment = client.create_comment(task_id=500, content="Resolved in Sentry")
 
     import json
 
@@ -466,6 +466,41 @@ def test_create_comment(client: JagaClient) -> None:
         "contentComment": "Resolved in Sentry",
         "attachIsPending": False,
     }
+    # The created comment has to come back: Sentry reads its id out of the return value and
+    # stores it on the note, and that id is the only way an edit can find the comment again.
+    assert comment == {"id": 1, "taskId": 500}
+
+
+@responses.activate
+def test_create_comment_survives_an_empty_body(client: JagaClient) -> None:
+    """Jaga answers a create with the whole comment — but a 200 with no body must not blow up
+    the caller with `TypeError: dict(None)`. The comment is lost; the sync is not."""
+    _mock_login()
+    responses.add(responses.POST, f"{API}/v1/comment", body="", status=200)
+
+    assert client.create_comment(task_id=500, content="hi") == {}
+
+
+@responses.activate
+def test_update_comment(client: JagaClient) -> None:
+    """An edited Sentry note must rewrite the comment it created, not append a second one.
+    Jaga's `CommentApiDto` wants `taskId` on the update too — the endpoint takes the same schema
+    both ways — so the task id travels along with the comment id."""
+    _mock_login()
+    responses.add(responses.PUT, f"{API}/v1/comment", json={"id": 77, "taskId": 500}, status=200)
+
+    comment = client.update_comment(comment_id=77, task_id=500, content="Reworded")
+
+    import json
+
+    assert responses.calls[-1].request.method == "PUT"
+    assert json.loads(responses.calls[-1].request.body) == {
+        "id": 77,
+        "taskId": 500,
+        "contentComment": "Reworded",
+        "attachIsPending": False,
+    }
+    assert comment == {"id": 77, "taskId": 500}
 
 
 # The three statuses a real space answers `workflowStatusesAvail` with. Names are Jaga's own,
