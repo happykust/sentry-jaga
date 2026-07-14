@@ -117,6 +117,18 @@ class JagaSyncMixin(JagaIssuesMixin, IssueSyncIntegration):
                 "default": True,
             },
             {
+                "name": "auto_label",
+                "type": "string",
+                "label": "Label to put on tasks created from Sentry",
+                "help": (
+                    "Every task this integration files gets this label, so all of them can be "
+                    "found in Jaga with a single filter. The label is created on first use. "
+                    "Leave the box empty to add no label. A task type that has no label "
+                    "attribute is filed without one."
+                ),
+                "default": issue_config.DEFAULT_AUTO_LABEL,
+            },
+            {
                 "name": self.comment_key,
                 "type": "boolean",
                 "label": "Sync Sentry comments to Jaga",

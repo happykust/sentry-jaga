@@ -6,7 +6,12 @@ import responses
 
 from sentry_jaga.client.api import JagaClient
 from sentry_jaga.client.auth import InMemoryCache
-from sentry_jaga.client.exceptions import JagaAuthError, JagaNotFoundError, JagaServerError
+from sentry_jaga.client.exceptions import (
+    JagaAuthError,
+    JagaError,
+    JagaNotFoundError,
+    JagaServerError,
+)
 
 BASE = "https://jaga.example.com"
 API = f"{BASE}/external-api"
@@ -350,6 +355,37 @@ def test_get_labels_returns_ids(client: JagaClient) -> None:
 
     sent = json.loads(responses.calls[-1].request.body)
     assert sent == {"searchText": "", "order": "ASC", "orderBy": "name"}
+
+
+@responses.activate
+def test_get_or_create_label_returns_the_id_of_the_label(client: JagaClient) -> None:
+    """`/v1/labels/list` is a get-or-create, despite the name: it answers with the labels named
+    in the body and creates the ones Jaga does not have yet. Verified against a live instance."""
+    _mock_login()
+    responses.add(
+        responses.POST,
+        f"{API}/v1/labels/list",
+        json={
+            "labels": [
+                {"id": 17834, "uuid": "u1", "name": "sentry", "color": "#8348FC1F", "projects": []}
+            ]
+        },
+        status=200,
+    )
+
+    assert client.get_or_create_label("sentry") == 17834
+    assert json.loads(responses.calls[-1].request.body) == {"names": ["sentry"]}
+
+
+@responses.activate
+def test_get_or_create_label_without_a_label_in_the_answer_raises(client: JagaClient) -> None:
+    """The endpoint is a get-or-create: an empty `labels` means it neither found nor made the
+    label. There is no id to put on the task, so say so instead of blowing up on an IndexError."""
+    _mock_login()
+    responses.add(responses.POST, f"{API}/v1/labels/list", json={"labels": []}, status=200)
+
+    with pytest.raises(JagaError):
+        client.get_or_create_label("sentry")
 
 
 @responses.activate

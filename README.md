@@ -20,6 +20,9 @@ status you configured (and, optionally, comments on it).
 
   The space and task type you last filed into are **remembered per Sentry project**, so a team
   that always files into one space does not have to pick it again every time.
+  Every task filed from Sentry is **labelled** (`sentry` by default), so the whole lot can be
+  found in Jaga with one filter. The label is created on first use; clear the setting to file
+  tasks without one.
 - **Link an existing Jaga task** to a Sentry issue by task code, with search by title and
   code. A comment linking back to the Sentry issue is posted on the task — the text is
   pre-filled in the link form, and you can reword it or clear it to post nothing.
@@ -98,6 +101,7 @@ Organization Settings → Integrations → **Jaga** → Configure:
 | Status to move the task to when the Sentry issue is reopened | To do | The same, for a regression. |
 | Also comment on the task | on | Post a comment in addition to moving the task. A comment is posted regardless whenever the task could not be moved. |
 | Sync Sentry comments to Jaga | **off** | Post notes written on a Sentry issue as comments on the linked Jaga task, attributed to their author. |
+| Label to put on tasks created from Sentry | `sentry` | Every task the integration files carries this label. Empty box = no label. |
 
 **Comment sync is off by default on purpose.** A Sentry note is internal discussion — it can
 name a customer, a credential or a suspect commit — and the Jaga task may have a wider audience
@@ -142,6 +146,11 @@ is cached in Sentry's Django cache.
   already ask for them — but they are still submitted inside `attributes`, because Jaga
   rejects a create without them even though both ids are in the URL. The author and the
   creation date are filled in by Jaga.
+- **The label on every task from Sentry.** The name of the label is resolved to an id through
+  `POST /v1/labels/list`, which is a get-or-create: the first task ever filed makes the label,
+  every later one reuses it. The id is **merged** into the `Label` cell of the create, so labels
+  you picked in the form yourself are kept — the automatic one is added to them, not put in
+  their place. A task type with no label attribute is filed without a label.
 - **Link.** A task is searched by title or code (`GET /v1/task/searchByTitleCode`, starting
   from 3 characters of the query), then resolved by code
   (`GET /v1/task/findExtendedWithFlexField/code/{taskCode}`).

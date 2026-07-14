@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Every task created from Sentry is labelled** (`sentry` by default, configurable per
+  organization; an empty setting turns it off). All the tasks the integration ever filed are
+  then one filter away in Jaga. The label is created on first use (`POST /v1/labels/list` is a
+  get-or-create), and it is *added* to the labels picked in the create form rather than
+  replacing them. A task type without a label attribute is filed without a label.
+
 - The status sync now **moves the linked Jaga task**, instead of only commenting on it. The
   target is configured per organization as a status *category* (Done / In progress / To do),
   and the concrete status is resolved per task from the ones its own workflow can reach — Jaga

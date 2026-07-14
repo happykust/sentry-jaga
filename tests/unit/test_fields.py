@@ -20,6 +20,7 @@ from sentry_jaga.fields import (
     find_attribute,
     form_data_to_attributes,
     injected_attributes,
+    merge_auto_label,
 )
 
 
@@ -254,6 +255,89 @@ def test_injected_attributes_skips_what_the_task_type_does_not_declare() -> None
     """A task type without the space attribute must not get a cell with a made-up fieldId."""
     assert injected_attributes([TITLE, TYPE], project_id=7, type_id=10) == [
         {"fieldId": 91, "value": 10, "referenceValue": True, "addInfo": {}}
+    ]
+
+
+def test_merge_auto_label_adds_the_label_to_a_payload_with_none() -> None:
+    payload: list[dict[str, Any]] = [
+        {"fieldId": 100, "value": "Login is broken", "referenceValue": False, "addInfo": {}}
+    ]
+    merge_auto_label(payload, REAL_ATTRIBUTES, 17834)
+
+    assert payload[-1] == {
+        "fieldId": 104,
+        # A string, not an int: the form's own label values are strings (`get_labels` offers
+        # `(str(id), name)`), and the two must not end up as different values in one list.
+        "value": ["17834"],
+        "referenceValue": True,
+        "addInfo": {},
+    }
+
+
+def test_merge_auto_label_keeps_the_labels_the_user_picked() -> None:
+    """`task.label_id` is `multiple`: the automatic label joins the user's choice, it does not
+    replace it. Overwriting the cell would silently throw away labels somebody chose on purpose."""
+    payload: list[dict[str, Any]] = [
+        {"fieldId": 104, "value": ["7", "8"], "referenceValue": True, "addInfo": {}}
+    ]
+    merge_auto_label(payload, REAL_ATTRIBUTES, 17834)
+
+    assert payload == [
+        {"fieldId": 104, "value": ["7", "8", "17834"], "referenceValue": True, "addInfo": {}}
+    ]
+
+
+def test_merge_auto_label_does_not_send_the_same_label_twice() -> None:
+    """The user picked the automatic label by hand from the select. Jaga must not be handed it
+    twice."""
+    payload: list[dict[str, Any]] = [
+        {"fieldId": 104, "value": ["17834", "7"], "referenceValue": True, "addInfo": {}}
+    ]
+    merge_auto_label(payload, REAL_ATTRIBUTES, 17834)
+
+    assert payload[0]["value"] == ["17834", "7"]
+
+
+def test_merge_auto_label_normalises_a_single_chosen_label() -> None:
+    """A `multiple` select with one thing chosen can arrive as a scalar rather than a list."""
+    payload: list[dict[str, Any]] = [
+        {"fieldId": 104, "value": "7", "referenceValue": True, "addInfo": {}}
+    ]
+    merge_auto_label(payload, REAL_ATTRIBUTES, 17834)
+
+    assert payload[0]["value"] == ["7", "17834"]
+
+
+def test_merge_auto_label_leaves_a_single_valued_attribute_the_user_filled_alone() -> None:
+    """A task type whose label attribute takes one value, already filled in: there is no room
+    for both, and the user's choice is the one that was made on purpose."""
+    single_label = _attr(104, "Label", LABEL_OBJECT_TYPE)
+    payload: list[dict[str, Any]] = [
+        {"fieldId": 104, "value": "7", "referenceValue": True, "addInfo": {}}
+    ]
+    merge_auto_label(payload, [TITLE, single_label], 17834)
+
+    assert payload[0]["value"] == "7"
+
+
+def test_merge_auto_label_fills_an_empty_single_valued_attribute() -> None:
+    single_label = _attr(104, "Label", LABEL_OBJECT_TYPE)
+    payload: list[dict[str, Any]] = []
+    merge_auto_label(payload, [TITLE, single_label], 17834)
+
+    assert payload == [{"fieldId": 104, "value": "17834", "referenceValue": True, "addInfo": {}}]
+
+
+def test_merge_auto_label_skips_a_task_type_without_labels() -> None:
+    """Not every task type has a label attribute. A cell with a `fieldId` the type never
+    declared is not a label — it is a create Jaga rejects."""
+    payload: list[dict[str, Any]] = [
+        {"fieldId": 100, "value": "Login is broken", "referenceValue": False, "addInfo": {}}
+    ]
+    merge_auto_label(payload, [TITLE, DESCRIPTION], 17834)
+
+    assert payload == [
+        {"fieldId": 100, "value": "Login is broken", "referenceValue": False, "addInfo": {}}
     ]
 
 

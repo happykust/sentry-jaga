@@ -74,6 +74,8 @@ REAL_ATTRIBUTES = [
 
 USERS = [("uuid-1", "Ivanov Ivan"), ("uuid-2", "Petrov Petr")]
 LABELS = [("7", "backend"), ("8", "frontend")]
+# The id a live Jaga answered `POST /v1/labels/list {"names": ["sentry"]}` with.
+AUTO_LABEL_ID = 17834
 
 # The statuses of the live test space, exactly as `workflowStatusesAvail` returns them (three,
 # not the ~90k of the global list). Jaga's own names, kept verbatim. RUF001 objects to the
@@ -142,6 +144,7 @@ class FakeClient:
         self.transitions: list[tuple[int, int]] = []
         self.statuses_requested: list[int] = []
         self.tasks_fetched: list[str] = []
+        self.labels_resolved: list[str] = []
 
     def get_projects(self) -> list[Project]:
         return self._projects
@@ -165,6 +168,10 @@ class FakeClient:
     def get_labels(self) -> list[tuple[str, str]]:
         self.labels_requested += 1
         return LABELS
+
+    def get_or_create_label(self, name: str) -> int:
+        self.labels_resolved.append(name)
+        return AUTO_LABEL_ID
 
     def create_task(
         self, project_id: int, task_type_id: int, attributes: list[dict[str, Any]]
@@ -511,6 +518,93 @@ def test_create_task_from_form_rejects_empty_form() -> None:
     """An empty form is refused before the injected cells make the payload look non-empty."""
     with pytest.raises(JagaError):
         create_task_from_form(FakeClient(), {"project": "1", "issue_type": "10"})
+
+
+# --- the label every task from Sentry carries ---------------------------------------------
+
+
+def test_the_auto_label_is_put_on_the_task() -> None:
+    """The feature: every task filed from Sentry is tagged, so all of them can be found in Jaga
+    with one filter. The name is resolved to an id through a get-or-create, because a Jaga that
+    has never seen this integration does not have the label yet."""
+    client = FakeClient()
+    create_task_from_form(
+        client,
+        {"project": "1", "issue_type": "10", "title": "Login is broken"},
+        auto_label="sentry",
+    )
+
+    assert client.labels_resolved == ["sentry"]
+    assert client.created is not None
+    assert _cell(client.created["attributes"], 104) == {
+        "fieldId": 104,
+        "value": [str(AUTO_LABEL_ID)],
+        "referenceValue": True,
+        "addInfo": {},
+    }
+
+
+def test_the_auto_label_joins_the_labels_the_user_picked() -> None:
+    """`task.label_id` is `multiple`, and the form offers it: a user may have picked labels of
+    their own. The automatic one is added to that choice, never written over it."""
+    client = FakeClient()
+    create_task_from_form(
+        client,
+        {"project": "1", "issue_type": "10", "title": "t", "attr_104": ["7", "8"]},
+        auto_label="sentry",
+    )
+
+    assert client.created is not None
+    label = _cell(client.created["attributes"], 104)
+    assert label is not None
+    assert label["value"] == ["7", "8", str(AUTO_LABEL_ID)]
+
+
+def test_an_empty_auto_label_is_the_off_switch() -> None:
+    """The organization cleared the setting: no label, and no HTTP call to resolve one."""
+    client = FakeClient()
+    create_task_from_form(client, {"project": "1", "issue_type": "10", "title": "t"}, auto_label="")
+
+    assert client.labels_resolved == []
+    assert client.created is not None
+    assert _cell(client.created["attributes"], 104) is None
+
+
+def test_a_blank_auto_label_is_not_a_label() -> None:
+    """A box with a space in it is an empty box, not a label named " "."""
+    client = FakeClient()
+    create_task_from_form(
+        client, {"project": "1", "issue_type": "10", "title": "t"}, auto_label="   "
+    )
+
+    assert client.labels_resolved == []
+
+
+def test_a_task_type_without_labels_is_filed_without_one() -> None:
+    """Not every task type has a label attribute. Such a type must still be filable — and must
+    not cost a get-or-create whose id could only go into a cell Jaga would reject."""
+    client = FakeClient(attributes=[SPACE, TYPE, TITLE, DESCRIPTION])
+    create_task_from_form(
+        client,
+        {"project": "1", "issue_type": "10", "title": "Login is broken"},
+        auto_label="sentry",
+    )
+
+    assert client.labels_resolved == []
+    assert client.created is not None
+    assert _cell(client.created["attributes"], 104) is None
+    assert _cell(client.created["attributes"], 100) is not None
+
+
+def test_a_task_created_without_an_auto_label_argument_carries_none() -> None:
+    """The core defaults to no label: the name comes from the organization's config, which only
+    the Sentry layer can read."""
+    client = FakeClient()
+    create_task_from_form(client, {"project": "1", "issue_type": "10", "title": "t"})
+
+    assert client.labels_resolved == []
+    assert client.created is not None
+    assert _cell(client.created["attributes"], 104) is None
 
 
 def test_create_task_from_form_returns_task_id_in_metadata() -> None:

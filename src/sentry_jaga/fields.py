@@ -242,6 +242,53 @@ def form_data_to_attributes(
     return payload
 
 
+def merge_auto_label(
+    payload: list[dict[str, Any]], attributes: list[Attribute], label_id: int
+) -> None:
+    """Add the automatic label to a create payload — *alongside* the labels the user picked.
+
+    `task.label_id` is a `multiple` attribute, and whoever fills the form may well have chosen
+    labels of their own. The automatic label is an addition to that choice, never a replacement,
+    so the id is merged into the cell the form produced instead of overwriting it — and a label
+    the user happened to pick by hand that IS the automatic one is not sent twice.
+
+    The id travels as a string, exactly as the form's own label values do: `get_labels` offers
+    its choices as `(str(id), name)` and Sentry hands back whatever it was given. Injecting a raw
+    `int` here would make a hand-picked "17" and an injected 17 two different values in the same
+    list — a duplicate Jaga would have to sort out.
+
+    A task type with no labels attribute at all gets nothing: the payload is left alone rather
+    than grown a cell whose `fieldId` belongs to no attribute of the type.
+    """
+    attr = find_attribute(attributes, LABEL_OBJECT_TYPE)
+    if attr is None:
+        return
+
+    value = str(label_id)
+    cell = next((item for item in payload if item["fieldId"] == attr.id), None)
+    if cell is None:
+        payload.append(
+            {
+                "fieldId": attr.id,
+                "value": [value] if attr.multiple else value,
+                "referenceValue": is_reference(attr),
+                "addInfo": {},
+            }
+        )
+        return
+
+    if not attr.multiple:
+        # A single-valued labels attribute that the user has already filled in: there is no room
+        # for both, and their choice is the one that was made on purpose.
+        return
+
+    raw = cell["value"]
+    chosen = [str(item) for item in (raw if isinstance(raw, list) else [raw])]
+    if value not in chosen:
+        chosen.append(value)
+    cell["value"] = chosen
+
+
 def injected_attributes(
     attributes: list[Attribute], project_id: int, type_id: int
 ) -> list[dict[str, Any]]:

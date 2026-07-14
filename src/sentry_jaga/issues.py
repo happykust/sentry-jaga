@@ -139,9 +139,27 @@ class JagaIssuesMixin(IssueBasicIntegration):
                 defaults=defaults,
             )
 
+    def _org_config(self) -> dict[str, Any]:
+        config: dict[str, Any] = self.org_integration.config if self.org_integration else {}
+        return config
+
+    def _auto_label(self) -> str:
+        """The label to put on the task, as the organization configured it.
+
+        The fallback repeats the field default in `get_organization_config`, and must keep doing
+        so: an organization that installed the integration and never opened its settings has an
+        empty `config`, and the label is on by default. An admin who cleared the box saves an
+        empty string, which is how the feature is turned off — so `.get` must not treat that as
+        "unset" and hand back the default again.
+        """
+        value = self._org_config().get("auto_label", issue_config.DEFAULT_AUTO_LABEL)
+        return str(value or "")
+
     def create_issue(self, data: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
         with as_integration_error():
-            return issue_config.create_task_from_form(self.get_client(), data)
+            return issue_config.create_task_from_form(
+                self.get_client(), data, auto_label=self._auto_label()
+            )
 
     def _search_url(self, group: Group) -> str | None:
         """The autocomplete endpoint for the link form — if it is reachable at all.

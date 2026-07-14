@@ -9,7 +9,7 @@ from urllib.parse import urljoin
 import requests
 
 from sentry_jaga.client.auth import Cache, InMemoryCache, TokenManager
-from sentry_jaga.client.exceptions import JagaApiError, error_from_response
+from sentry_jaga.client.exceptions import JagaApiError, JagaError, error_from_response
 from sentry_jaga.client.models import Attribute, Project, Status, TaskRef, TaskType, Token
 
 API_PREFIX = "/external-api"
@@ -209,6 +209,26 @@ class JagaClient:
             (str(item["id"]), str(item.get("name") or item["id"]))
             for item in payload.get("content", [])
         ]
+
+    def get_or_create_label(self, name: str) -> int:
+        """The id of the label with this name — created on the spot if Jaga has no such label.
+
+        `/v1/labels/list` is a get-or-create, despite the name: it answers with the labels named
+        in the body and makes the ones that do not exist yet. Verified against a live instance —
+        called twice with the same name, it returns the same id both times.
+
+        There is no other way round it: the auto-label has to be an id by the time the task is
+        created, and a Jaga instance that has never seen this integration has no such label yet.
+        `/v1/labels/getPage` (see `get_labels`) only lists what already exists.
+        """
+        payload = self._authed("POST", "/v1/labels/list", json={"names": [name]})
+        labels = payload.get("labels") or [] if isinstance(payload, dict) else []
+        if not labels:
+            # The endpoint is a get-or-create: an empty answer means it neither found nor made
+            # the label, and there is no id to put on the task. Say so instead of failing later
+            # on an IndexError.
+            raise JagaError(f"Jaga returned no label for {name!r}.")
+        return int(labels[0]["id"])
 
     # --- tasks ----------------------------------------------------------
 

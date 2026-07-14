@@ -86,6 +86,25 @@ LABELS_RESPONSE = {
     "pageNumber": 0,
     "totalElements": 1,
 }
+# `POST /v1/labels/list` is a get-or-create: this is what a live instance answered for "sentry".
+AUTO_LABEL_RESPONSE = {
+    "labels": [
+        {"id": 17834, "uuid": "u17834", "color": "#8348FC1F", "name": "sentry", "projects": []}
+    ]
+}
+CREATED_TASK = {
+    "id": 500,
+    "code": "PLT-500",
+    "orderNum": 0,
+    "statusId": 1,
+    "statusModifierId": 1,
+    "taskTypeId": 10,
+    "updateTs": "2026-06-25T10:00:00Z",
+    "statusTransitions": [],
+    "colorIndicator": [],
+    "timeInStatus": {},
+    "attributes": [],
+}
 
 
 class JagaIssuesTest(APITestCase):
@@ -163,27 +182,21 @@ class JagaIssuesTest(APITestCase):
         for hidden in ("attr_90", "attr_91", "attr_92", "attr_102"):
             assert hidden not in by_name
 
+    @staticmethod
+    def _mock_create() -> None:
+        responses.add(responses.POST, f"{API}/v1/labels/list", json=AUTO_LABEL_RESPONSE)
+        responses.add(responses.POST, f"{API}/v1/task/createByTaskType/1/10", json=CREATED_TASK)
+
+    @staticmethod
+    def _created_cells() -> dict[int, dict]:
+        create = next(c for c in responses.calls if "createByTaskType" in c.request.url)
+        return {item["fieldId"]: item for item in json.loads(create.request.body)["attributes"]}
+
     @responses.activate
     def test_create_issue_posts_attributes_and_returns_key(self) -> None:
         self._mock_base()
         self._mock_attributes()
-        responses.add(
-            responses.POST,
-            f"{API}/v1/task/createByTaskType/1/10",
-            json={
-                "id": 500,
-                "code": "PLT-500",
-                "orderNum": 0,
-                "statusId": 1,
-                "statusModifierId": 1,
-                "taskTypeId": 10,
-                "updateTs": "2026-06-25T10:00:00Z",
-                "statusTransitions": [],
-                "colorIndicator": [],
-                "timeInStatus": {},
-                "attributes": [],
-            },
-        )
+        self._mock_create()
 
         result = self.installation.create_issue(
             {
@@ -197,12 +210,10 @@ class JagaIssuesTest(APITestCase):
         assert result["key"] == "PLT-500"
         assert result["title"] == "Login is broken"
 
-        import json
+        by_field = self._created_cells()
 
-        sent = json.loads(responses.calls[-1].request.body)
-        by_field = {item["fieldId"]: item for item in sent["attributes"]}
-
-        assert sorted(by_field) == [90, 91, 100, 101, 110]
+        # 104 is the label every task from Sentry carries (see the auto-label tests below).
+        assert sorted(by_field) == [90, 91, 100, 101, 104, 110]
         # Jaga answers 500 without these two, even though both ids are in the URL.
         assert by_field[90] == {
             "fieldId": 90,
@@ -216,6 +227,58 @@ class JagaIssuesTest(APITestCase):
             "referenceValue": True,
             "addInfo": {},
         }
+
+    # --- the label every task filed from Sentry carries -------------------------------------
+    #
+    # The name comes from the organization's config, which only the Sentry layer can read; the
+    # merge itself is the core's, and the unit tests own it. What these prove is the wiring: the
+    # default before anything was ever saved, and the empty string as the off switch.
+
+    @responses.activate
+    def test_a_task_is_labelled_before_the_organization_configures_anything(self) -> None:
+        """`config` is {} until an admin opens the settings page and saves. The label must be on
+        anyway — and on the *same* name the settings page renders as its default, or the first
+        Save would silently change the behaviour without anybody touching the box."""
+        self._mock_base()
+        self._mock_attributes()
+        self._mock_create()
+
+        assert self.installation.org_integration.config == {}
+        self.installation.create_issue(
+            {"project": "1", "issue_type": "10", "title": "Login is broken"}
+        )
+
+        resolved = next(c for c in responses.calls if c.request.url.endswith("/v1/labels/list"))
+        assert json.loads(resolved.request.body) == {"names": ["sentry"]}
+        assert self._created_cells()[104]["value"] == ["17834"]
+
+        fields = {f["name"]: f for f in self.installation.get_organization_config()}
+        assert fields["auto_label"]["default"] == "sentry"
+
+    @responses.activate
+    def test_the_auto_label_joins_the_labels_chosen_in_the_form(self) -> None:
+        self._mock_base()
+        self._mock_attributes()
+        self._mock_create()
+
+        self.installation.create_issue(
+            {"project": "1", "issue_type": "10", "title": "t", "attr_104": ["7"]}
+        )
+
+        assert self._created_cells()[104]["value"] == ["7", "17834"]
+
+    @responses.activate
+    def test_an_organization_that_cleared_the_setting_files_an_unlabelled_task(self) -> None:
+        self._mock_base()
+        self._mock_attributes()
+        self._mock_create()
+
+        self.installation.update_organization_config({"auto_label": ""})
+        self.installation.create_issue({"project": "1", "issue_type": "10", "title": "t"})
+
+        assert 104 not in self._created_cells()
+        # And Jaga was never asked to make a label.
+        assert not [c for c in responses.calls if c.request.url.endswith("/v1/labels/list")]
 
     @responses.activate
     def test_get_issue_by_code(self) -> None:

@@ -31,6 +31,7 @@ from sentry_jaga.fields import (
     find_attribute,
     form_data_to_attributes,
     injected_attributes,
+    merge_auto_label,
 )
 
 logger = logging.getLogger("sentry_jaga.issue_config")
@@ -57,6 +58,12 @@ CATEGORY_DONE = "status.category.done"
 # them itself (`IssueBasicIntegration.store_issue_last_defaults`), keyed by the names below —
 # which is why they must stay in step with the field names `build_create_config` emits.
 PERSISTED_FIELDS = ("project", "issue_type")
+
+# The label every task created from Sentry is tagged with, unless the organization says
+# otherwise. An empty setting means no label at all. The default lives here, in the core,
+# because two places must agree on it: the org-config field that renders it (`sync.py`) and the
+# fallback the create falls back to before that config was ever saved (`issues.py`).
+DEFAULT_AUTO_LABEL = "sentry"
 
 
 class NoProjectsError(JagaError):
@@ -225,8 +232,19 @@ def build_create_config(
     return fields
 
 
-def create_task_from_form(client: JagaClient, form_data: dict[str, Any]) -> dict[str, Any]:
-    """Create a Jaga task from the data submitted in a Sentry form."""
+def create_task_from_form(
+    client: JagaClient, form_data: dict[str, Any], *, auto_label: str = ""
+) -> dict[str, Any]:
+    """Create a Jaga task from the data submitted in a Sentry form.
+
+    `auto_label` is the name of the label every task filed from Sentry carries, so that all of
+    them can be found in Jaga with one filter (`DEFAULT_AUTO_LABEL`; an empty string turns it
+    off). It is resolved to an id here rather than in the form, because the label may not exist
+    in Jaga yet — `get_or_create_label` makes it on first use.
+
+    The label is NOT looked up when the task type has no labels attribute: not every type does,
+    and a form render must not cost an HTTP call that can only end in a cell Jaga would reject.
+    """
     project_id = int(form_data["project"])
     type_id = int(form_data["issue_type"])
 
@@ -234,6 +252,13 @@ def create_task_from_form(client: JagaClient, form_data: dict[str, Any]) -> dict
     payload = form_data_to_attributes(form_data, attributes)
     if not payload:
         raise JagaError("Not a single task attribute was filled in.")
+
+    # Deliberately not gated on the attribute being `visible`: a type that hides its labels from
+    # the form still has them, and the point of the auto-label is that EVERY task from Sentry
+    # carries it. The user cannot have chosen anything there, so there is nothing to merge with.
+    label = auto_label.strip()
+    if label and find_attribute(attributes, LABEL_OBJECT_TYPE) is not None:
+        merge_auto_label(payload, attributes, client.get_or_create_label(label))
 
     # The space and the task type have no form field of their own, so nothing above produces
     # them — and Jaga answers 500 to a create that leaves them out of `attributes`, even

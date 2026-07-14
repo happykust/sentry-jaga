@@ -14,7 +14,12 @@ from sentry.testutils.cases import APITestCase
 from sentry.testutils.silo import assume_test_silo_mode
 from sentry.types.activity import ActivityType
 
-from sentry_jaga.issue_config import CATEGORY_DONE, CATEGORY_IN_PROGRESS, CATEGORY_TODO
+from sentry_jaga.issue_config import (
+    CATEGORY_DONE,
+    CATEGORY_IN_PROGRESS,
+    CATEGORY_TODO,
+    DEFAULT_AUTO_LABEL,
+)
 
 BASE = "https://jaga.example.com"
 API = f"{BASE}/external-api"
@@ -140,12 +145,16 @@ class JagaSyncTest(APITestCase):
             "unresolved_status_category",
             "comment_on_status_change",
             "sync_comments",
+            "auto_label",
         }
         assert fields["sync_status_forward"]["default"] is True
         assert fields["resolved_status_category"]["default"] == CATEGORY_DONE
         assert fields["unresolved_status_category"]["default"] == CATEGORY_TODO
         assert fields["comment_on_status_change"]["default"] is True
         assert fields["sync_comments"]["default"] is False
+        # An empty box is the off switch, so this default cannot be sourced from Jaga either —
+        # and it must be the same literal the create falls back to (see `issues._auto_label`).
+        assert fields["auto_label"]["default"] == DEFAULT_AUTO_LABEL
 
     def test_status_category_choices_are_offered_without_calling_jaga(self) -> None:
         """The settings page must render while Jaga is down — an org whose Jaga is unreachable
