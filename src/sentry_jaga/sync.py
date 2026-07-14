@@ -117,6 +117,19 @@ class JagaSyncMixin(JagaIssuesMixin, IssueSyncIntegration):
                 "default": True,
             },
             {
+                "name": "attach_event",
+                "type": "boolean",
+                "label": "Attach the Sentry event to the task",
+                "help": (
+                    "Attach the full JSON of the issue's latest event to the task, as a file. "
+                    "OFF BY DEFAULT: an event routinely carries personal data — the user's "
+                    "email and IP address, the request headers and body — and the Jaga task may "
+                    "have a wider audience than the Sentry issue. Turn it on only if that is "
+                    "acceptable. Does not apply to tasks filed by an alert rule."
+                ),
+                "default": False,
+            },
+            {
                 "name": "auto_label",
                 "type": "string",
                 "label": "Label to put on tasks created from Sentry",

@@ -14,7 +14,9 @@ from typing import TYPE_CHECKING, Any
 
 from django.urls import NoReverseMatch, reverse
 from sentry.integrations.mixins.issues import IssueBasicIntegration
+from sentry.models.group import Group
 from sentry.shared_integrations.exceptions import IntegrationError, IntegrationFormError
+from sentry.utils import json
 from sentry.utils.http import absolute_uri
 
 from sentry_jaga import issue_config
@@ -23,7 +25,7 @@ from sentry_jaga.client.exceptions import JagaError, JagaNotFoundError
 from sentry_jaga.descriptions import build_description, build_title
 
 if TYPE_CHECKING:
-    from sentry.models.group import Group
+    from sentry.services.eventstore.models import GroupEvent
 
 logger = logging.getLogger("sentry_jaga.issues")
 
@@ -137,6 +139,12 @@ class JagaIssuesMixin(IssueBasicIntegration):
                 title,
                 description,
                 defaults=defaults,
+                # The one and only way the issue reaches `create_issue`, which Sentry hands the
+                # form data and nothing else. Deliberately absent when there is no group — the
+                # alert-rule modal renders this form that way and SAVES what it gets, so a group
+                # id here would be frozen into the rule and every task it ever files would carry
+                # the event of one long-dead issue. See `issue_config.GROUP_ID_FIELD`.
+                group_id=str(group.id) if group is not None else None,
             )
 
     def _org_config(self) -> dict[str, Any]:
@@ -157,9 +165,82 @@ class JagaIssuesMixin(IssueBasicIntegration):
 
     def create_issue(self, data: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
         with as_integration_error():
-            return issue_config.create_task_from_form(
+            result = issue_config.create_task_from_form(
                 self.get_client(), data, auto_label=self._auto_label()
             )
+        if self._org_config().get("attach_event", False):
+            self._attach_event(data, result)
+        return result
+
+    def _group_from_form(self, data: dict[str, Any]) -> Group | None:
+        """The Sentry issue the create form was opened from, if it said so.
+
+        The id arrives in a hidden form field, which means it arrives from the browser — so it is
+        looked up SCOPED TO THIS ORGANIZATION. Unscoped, a hand-edited request would attach the
+        latest event of any group on the instance, from any other customer's project, to a Jaga
+        task of the attacker's choosing.
+
+        No id at all is the normal case for an alert-rule ticket (`get_create_issue_config` emits
+        no field without a group) and simply means: nothing to attach.
+        """
+        raw = data.get(issue_config.GROUP_ID_FIELD)
+        if not raw:
+            return None
+        # The annotation is for mypy: Django's manager is untyped in this repo's standalone run,
+        # so `first()` comes back as Any and strict mode will not return that as `Group | None`.
+        group: Group | None = Group.objects.filter(
+            id=int(raw), project__organization_id=self.organization_id
+        ).first()
+        return group
+
+    def _event_json(self, event: GroupEvent) -> bytes:
+        """The event as Sentry itself hands it to the outside world.
+
+        `as_dict()` is the event's "normalized form for external consumers", and it is exactly
+        what Sentry serves behind the JSON link on an event page (`EventJsonEndpoint`) — so what
+        lands on the Jaga task is byte for byte the file a user would have downloaded by hand.
+
+        The alternative, `serialize(event, user, EventSerializer())`, is the shape the Sentry UI
+        renders (`entries[]`): it needs a user to serialize for — and on the alert-rule path there
+        is no user — and it reshapes the event for a frontend nobody will point at this file.
+
+        `sentry.utils.json` rather than the stdlib: `as_dict()` carries `datetime` objects (and
+        can carry sets and Decimals), which Sentry's encoder knows how to write and the stdlib's
+        raises on.
+        """
+        return str(json.dumps(event.as_dict())).encode()
+
+    def _attach_event(self, data: dict[str, Any], result: dict[str, Any]) -> None:
+        """Attach the JSON of the issue's latest event to the task just created from it.
+
+        Everything here runs AFTER the task exists in Jaga, and that governs the error handling:
+        the task is created, it is about to be linked to the Sentry issue, and the user is owed
+        that link. An attachment that cannot be made is a warning in the log, never an exception —
+        raising would fail the create the user can see, over a file they may not even have noticed
+        was coming. The catch is deliberately broad for the same reason: the event comes from
+        Snuba/nodestore, and it is not worth enumerating every way a read of those can fail.
+        """
+        key = result.get("key")
+        try:
+            group = self._group_from_form(data)
+            if group is None:
+                return
+
+            event = group.get_latest_event()
+            if event is None:
+                # An issue whose events have aged out of the retention window still has a group.
+                logger.info("jaga.issues.no_event_to_attach", extra={"key": key})
+                return
+
+            issue_config.attach_event_json(
+                self.get_client(),
+                space_id=int(data["project"]),
+                task_id=int(result["metadata"]["task_id"]),
+                event_id=str(event.event_id),
+                content=self._event_json(event),
+            )
+        except Exception:
+            logger.warning("jaga.issues.event_attachment_failed", extra={"key": key}, exc_info=True)
 
     def _search_url(self, group: Group) -> str | None:
         """The autocomplete endpoint for the link form — if it is reachable at all.

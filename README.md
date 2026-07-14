@@ -26,6 +26,9 @@ status you configured (and, optionally, comments on it).
 - **Link an existing Jaga task** to a Sentry issue by task code, with search by title and
   code. A comment linking back to the Sentry issue is posted on the task — the text is
   pre-filled in the link form, and you can reword it or clear it to post nothing.
+- **Attach the Sentry event to the task** as a JSON file — the same payload Sentry shows behind
+  the "JSON" link on an event. **Off by default**, because an event carries personal data; see
+  [Sync settings](#sync-settings).
 - **Status sync.** Resolving a Sentry issue **moves the linked task** to the status you chose
   (and reopening it moves the task back); a comment can be posted on top. You map onto a status
   *category* — Done / In progress / To do — and the concrete status is resolved per task from
@@ -102,6 +105,17 @@ Organization Settings → Integrations → **Jaga** → Configure:
 | Also comment on the task | on | Post a comment in addition to moving the task. A comment is posted regardless whenever the task could not be moved. |
 | Sync Sentry comments to Jaga | **off** | Post notes written on a Sentry issue as comments on the linked Jaga task, attributed to their author. |
 | Label to put on tasks created from Sentry | `sentry` | Every task the integration files carries this label. Empty box = no label. |
+| Attach the Sentry event to the task | **off** | Attach the JSON of the issue's latest event to the task, as a file. |
+
+**The event attachment is off by default on purpose — the file contains personal data.** It is
+the event exactly as Sentry stores it: the user's email and IP address, the request headers and
+body, cookies, and anything else your SDK sent. That is the same content Sentry shows behind the
+"JSON" link on an event page, but a Jaga task can have a much wider audience than a Sentry issue,
+and once a file is on a task it stays there. Turn this on only if that is acceptable — and note
+that what lands in the file is what Sentry *stored*: if you rely on Sentry's data-scrubbing, scrub
+at ingest (project settings → Security & Privacy), because nothing is stripped on the way out.
+
+It does **not** apply to tasks filed by an alert rule — see [Limitations](#limitations).
 
 **Comment sync is off by default on purpose.** A Sentry note is internal discussion — it can
 name a customer, a credential or a suspect commit — and the Jaga task may have a wider audience
@@ -165,6 +179,20 @@ is cached in Sentry's Django cache.
   that trips it files a task. The title and the description come from the event itself, and the
   task is linked to the Sentry issue exactly as a hand-created one is — so the status sync
   applies to it too.
+- **The event attachment.** With the toggle on, the issue's latest event is serialized with
+  `Event.as_dict()` — the same normalized form Sentry itself serves behind the "JSON" link on an
+  event page — and uploaded as `sentry-event-<event id>.json`
+  (`POST /v1/attacher/file/create?projectId=…&taskId=…`, multipart).
+
+  It happens **after** the task is created, and a failed upload is logged and swallowed: the task
+  exists by then, and losing the create over an attachment would be a worse bug than losing the
+  attachment.
+
+  The issue reaches the create through a **hidden field** in the form (`sentry_group_id`). Sentry
+  hands `create_issue()` the submitted form and nothing else — no group, no event — and there is
+  no "after create, with the event" hook to use instead. The field is only emitted when the form
+  is opened from an issue, which is why alert rules get no attachment: see
+  [Limitations](#limitations).
 - **Status sync.** When a Sentry issue is resolved or reopened, the linked task is **moved to
   another status** (`POST /v1/task/updateTaskStatusAndFields`) — and, if you leave the comment
   option on, a comment is posted as well (`POST /v1/comment`).
@@ -203,6 +231,13 @@ the package creates no tables of its own.
   If a task type marks one of them as **required**, the create will fail with Jaga's own
   message naming the field, and the plugin logs a `required_attribute_not_supported` warning
   with its mnemonic. Either make the field optional in Jaga, or create such tasks by hand.
+- **The event attachment does not work for tasks filed by an alert rule.** The rule modal renders
+  the create form with no issue behind it (Sentry calls `get_create_issue_config(None, …)` there)
+  and **saves whatever the form returns into the rule**. So the hidden field that carries the
+  issue is deliberately not emitted on that path: a group id saved into a rule would be frozen at
+  the moment the rule was written, and every task the rule ever filed afterwards would get the
+  event of that one long-dead issue attached to it. No field, no attachment — the honest outcome.
+  Tasks created from an issue by hand are unaffected.
 - **The sync is one-way, Sentry → Jaga.** Inbound Jaga → Sentry webhooks are not supported:
   changes made on the Jaga side do not reach Sentry.
 - **The live search when linking needs one line of config.** Autocomplete requires an HTTP

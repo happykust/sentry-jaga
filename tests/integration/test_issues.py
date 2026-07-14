@@ -8,7 +8,15 @@ import responses
 from sentry.integrations.models.external_issue import ExternalIssue
 from sentry.silo.base import SiloMode
 from sentry.testutils.cases import APITestCase
+from sentry.testutils.helpers.datetime import before_now
 from sentry.testutils.silo import assume_test_silo_mode
+from sentry.testutils.skips import requires_snuba
+
+from sentry_jaga.issue_config import GROUP_ID_FIELD
+
+# The create form reads the issue's latest event (to pre-fill the description, and — with the
+# toggle on — to attach it), and an event comes from Snuba.
+pytestmark = [requires_snuba]
 
 BASE = "https://jaga.example.com"
 API = f"{BASE}/external-api"
@@ -227,6 +235,49 @@ class JagaIssuesTest(APITestCase):
             "referenceValue": True,
             "addInfo": {},
         }
+
+    # --- carrying the Sentry issue through the form ------------------------------------------
+
+    @responses.activate
+    def test_the_create_form_carries_the_issue_in_a_hidden_field(self) -> None:
+        """`create_issue` is handed the submitted form and nothing else — no group, no event.
+        The hidden field is the only way the issue can reach it; Sentry's frontend renders it as
+        `display: none` and submits its default with the rest of the form."""
+        self._mock_base()
+        responses.add(
+            responses.GET, f"{API}/v1/project/1/taskType", json=[{"id": 10, "typeName": "Bug"}]
+        )
+        self._mock_attributes()
+
+        config = self.installation.get_create_issue_config(self.group, self.user)
+        by_name = {field["name"]: field for field in config}
+
+        assert by_name[GROUP_ID_FIELD] == {
+            "name": GROUP_ID_FIELD,
+            "type": "hidden",
+            "default": str(self.group.id),
+        }
+
+    @responses.activate
+    def test_the_form_an_alert_rule_saves_carries_no_issue(self) -> None:
+        """The guard against a stale event, and the reason the attachment cannot work for alert
+        rules.
+
+        This is the exact call the ticket-rule modal makes — `get_create_issue_config(None, user)`
+        (see `IntegrationSerializer`: 'Query param "action" only attached in TicketRuleForm
+        modal') — and whatever comes back is SAVED INTO THE RULE. A group id in there would be
+        frozen at the moment the rule was written, and every task the rule ever filed afterwards
+        would carry the event of that one long-dead issue. So: no group, no field.
+        """
+        self._mock_base()
+        responses.add(
+            responses.GET, f"{API}/v1/project/1/taskType", json=[{"id": 10, "typeName": "Bug"}]
+        )
+        self._mock_attributes()
+
+        config = self.installation.get_create_issue_config(None, self.user)
+
+        assert GROUP_ID_FIELD not in {field["name"] for field in config}
 
     # --- the label every task filed from Sentry carries -------------------------------------
     #
@@ -506,3 +557,163 @@ class JagaIssuesTest(APITestCase):
         )
 
         self.installation.after_link_issue(external_issue, data={"comment": "hi"})
+
+
+class JagaEventAttachmentTest(APITestCase):
+    """Attaching the Sentry event to the task, behind the organization's toggle.
+
+    Only a real Sentry can hold this half up: the event comes out of Snuba and nodestore, and
+    `create_issue` has to find the group by an id that travelled through the browser.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        with assume_test_silo_mode(SiloMode.CONTROL):
+            self.integration = self.create_provider_integration(
+                provider="jaga",
+                name="Jaga",
+                external_id=BASE,
+                metadata={"instance_url": BASE, "email": "bot@example.com", "password": "secret"},
+            )
+            self.integration.add_organization(self.organization, self.user)
+        self.installation = self.integration.get_installation(self.organization.id)
+
+        self.event = self.store_event(
+            data={
+                "event_id": "a" * 32,
+                "message": "Login is broken",
+                "timestamp": before_now(minutes=1).isoformat(),
+                # The very thing the toggle exists for: an event carries personal data.
+                "user": {"email": "customer@example.com", "ip_address": "203.0.113.7"},
+            },
+            project_id=self.project.id,
+        )
+        assert self.event.group is not None
+        self.group = self.event.group
+
+    @staticmethod
+    def _mock_jaga(attachment_status: int = 200) -> None:
+        responses.add(responses.POST, f"{API}/v1/auth/login", json=AUTH_OK, status=200)
+        responses.add(responses.GET, f"{API}/v1/project/1/taskType/10", json=ATTRS_RESPONSE)
+        responses.add(responses.POST, f"{API}/v1/labels/list", json=AUTO_LABEL_RESPONSE)
+        responses.add(responses.POST, f"{API}/v1/task/createByTaskType/1/10", json=CREATED_TASK)
+        responses.add(
+            responses.POST,
+            f"{API}/v1/attacher/file/create",
+            json={"id": 1901762, "attachName": "sentry-event.json"}
+            if attachment_status == 200
+            else {"message": "boom"},
+            status=attachment_status,
+        )
+
+    def _form_data(self, **extra: object) -> dict[str, object]:
+        return {
+            "project": "1",
+            "issue_type": "10",
+            "title": "Login is broken",
+            GROUP_ID_FIELD: str(self.group.id),
+            **extra,
+        }
+
+    @staticmethod
+    def _uploads() -> list[responses.Call]:
+        return [c for c in responses.calls if "attacher/file/create" in c.request.url]
+
+    @responses.activate
+    def test_nothing_is_attached_until_an_admin_turns_it_on(self) -> None:
+        """Off by default, and the default has to be the one an untouched `config` behaves as:
+        an event is full of personal data, and the Jaga task may have a wider audience than the
+        Sentry issue."""
+        self._mock_jaga()
+
+        assert self.installation.org_integration.config == {}
+        result = self.installation.create_issue(self._form_data())
+
+        assert result["key"] == "PLT-500"
+        assert self._uploads() == []
+
+        fields = {f["name"]: f for f in self.installation.get_organization_config()}
+        assert fields["attach_event"]["default"] is False
+
+    @responses.activate
+    def test_the_event_is_attached_to_the_task_when_the_toggle_is_on(self) -> None:
+        self._mock_jaga()
+        self.installation.update_organization_config({"attach_event": True})
+
+        self.installation.create_issue(self._form_data())
+
+        upload = self._uploads()[0]
+        # Jaga files attachments under a space, and `taskId` is what binds the file to the task.
+        assert "projectId=1" in upload.request.url
+        assert "taskId=500" in upload.request.url
+
+        body = bytes(upload.request.body)
+        assert b'filename="sentry-event-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json"' in body
+        assert b"Content-Type: application/json" in body
+        # The file really is the event, as Sentry itself serves it behind the JSON link on an
+        # event page (`EventJsonEndpoint` -> `event.as_dict()`)...
+        assert b'"event_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' in body
+        # ...personal data and all. This is precisely why the toggle is off by default.
+        assert b"customer@example.com" in body
+
+    @responses.activate
+    def test_a_task_filed_by_an_alert_rule_gets_no_attachment(self) -> None:
+        """The rule's saved form has no `sentry_group_id` — `get_create_issue_config` emits none
+        without a group — so there is no issue to take an event from. That is the honest outcome:
+        the alternative would have been a group id frozen into the rule, attaching one stale event
+        to every task the rule ever filed."""
+        self._mock_jaga()
+        self.installation.update_organization_config({"attach_event": True})
+
+        # Exactly what the ticket action hands `create_issue`: the saved cascade plus the title
+        # and description of the event that fired the rule. No group.
+        result = self.installation.create_issue(
+            {"project": "1", "issue_type": "10", "title": "Login is broken", "description": "body"}
+        )
+
+        assert result["key"] == "PLT-500"
+        assert self._uploads() == []
+
+    @responses.activate
+    def test_a_group_of_another_organization_is_not_attached(self) -> None:
+        """The group id arrives in a hidden field — that is, from the browser. Unscoped, a
+        hand-edited request would pull the latest event of any group on the instance, out of
+        another customer's project, and file it onto a Jaga task.
+
+        The other organization's issue is given a real event ON PURPOSE: an issue with no event
+        attaches nothing anyway, and a test built on one would pass with the scoping deleted.
+        """
+        self._mock_jaga()
+        self.installation.update_organization_config({"attach_event": True})
+
+        other_project = self.create_project(organization=self.create_organization())
+        other_event = self.store_event(
+            data={
+                "event_id": "b" * 32,
+                "message": "Another customer's issue",
+                "timestamp": before_now(minutes=1).isoformat(),
+                "user": {"email": "someone-elses-customer@example.com"},
+            },
+            project_id=other_project.id,
+        )
+        assert other_event.group is not None
+
+        result = self.installation.create_issue(
+            self._form_data(**{GROUP_ID_FIELD: str(other_event.group.id)})
+        )
+
+        assert result["key"] == "PLT-500"
+        assert self._uploads() == []
+
+    @responses.activate
+    def test_a_failing_upload_does_not_lose_the_task(self) -> None:
+        """The task is already created by the time the upload runs, and the caller is about to
+        link it to the Sentry issue. Raising here would fail a create that in fact succeeded —
+        and orphan the task in Jaga — over a file nobody may even have noticed was coming."""
+        self._mock_jaga(attachment_status=500)
+        self.installation.update_organization_config({"attach_event": True})
+
+        result = self.installation.create_issue(self._form_data())
+
+        assert result["key"] == "PLT-500"
+        assert len(self._uploads()) == 1

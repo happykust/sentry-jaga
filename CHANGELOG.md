@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **The Sentry event can be attached to the task** as a JSON file (`Attach the Sentry event to
+  the task`, **off by default**). It is the event as Sentry itself serves it behind the "JSON"
+  link on an event page (`Event.as_dict()`), and it therefore carries personal data — the user's
+  email and IP address, request headers and body — which is why an admin has to turn it on
+  deliberately. A failed upload is logged and swallowed: the task is already created by then.
+
+  It does **not** apply to tasks filed by an alert rule. The rule modal renders the create form
+  with no issue behind it and saves the result into the rule, so the hidden field that carries the
+  issue is not emitted there — otherwise a single group id would be frozen into the rule and every
+  task it ever filed would carry the event of one long-dead issue.
 - **Every task created from Sentry is labelled** (`sentry` by default, configurable per
   organization; an empty setting turns it off). All the tasks the integration ever filed are
   then one filter away in Jaga. The label is created on first use (`POST /v1/labels/list` is a

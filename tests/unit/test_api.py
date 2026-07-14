@@ -389,6 +389,49 @@ def test_get_or_create_label_without_a_label_in_the_answer_raises(client: JagaCl
 
 
 @responses.activate
+def test_attach_file_uploads_multipart_and_binds_the_file_to_the_task(client: JagaClient) -> None:
+    """`projectId` is mandatory (Jaga files attachments under a space) and `taskId` is what binds
+    the file to the task — despite the endpoint's "without binding to entity" summary. Verified
+    against a live instance."""
+    _mock_login()
+    responses.add(
+        responses.POST,
+        f"{API}/v1/attacher/file/create",
+        json={
+            "id": 1901762,
+            "attachUser": 193688,
+            "attachName": "sentry-event.json",
+            "attachType": "json",
+            "attachSize": 50,
+            "attachPath": "/x",
+            "originalName": "sentry-event.json",
+            "createTs": "2026-07-01T10:00:00Z",
+            "isDeleted": False,
+        },
+        status=200,
+    )
+
+    attachment = client.attach_file(
+        space_id=11361,
+        task_id=1703944,
+        filename="sentry-event.json",
+        content=b'{"event_id": "abc"}',
+        content_type="application/json",
+    )
+    assert attachment["id"] == 1901762
+
+    request = responses.calls[-1].request
+    assert "projectId=11361" in request.url
+    assert "taskId=1703944" in request.url
+    # `requests` builds the multipart body — and its boundary — from `files=`. A Content-Type of
+    # our own would destroy the boundary, so the header must be the one it generated.
+    assert request.headers["Content-Type"].startswith("multipart/form-data; boundary=")
+    body = bytes(request.body)
+    assert b'name="file"; filename="sentry-event.json"' in body
+    assert b'{"event_id": "abc"}' in body
+
+
+@responses.activate
 def test_get_dictionary_values(client: JagaClient) -> None:
     _mock_login()
     responses.add(

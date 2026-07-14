@@ -259,6 +259,28 @@ class JagaClient:
         )
         return [TaskRef.from_api(item) for item in payload.get("content", [])]
 
+    def attach_file(
+        self, space_id: int, task_id: int, filename: str, content: bytes, content_type: str
+    ) -> dict[str, Any]:
+        """Upload a file and attach it to a task. Returns the attachment Jaga created.
+
+        The summary of `/v1/attacher/file/create` reads "upload attachment without binding to
+        entity", and the endpoint takes a `taskId` anyway — verified against a live instance:
+        with it, the file lands ON the task, not in limbo. `projectId` is mandatory (Jaga files
+        every attachment under a space), which is why the space has to be passed down here even
+        though the task already knows which one it lives in.
+
+        `requests` builds the multipart body from `files=` — including its boundary, which is why
+        no Content-Type header of ours may go with it. `_send` passes `files=` straight through.
+        """
+        payload = self._authed(
+            "POST",
+            "/v1/attacher/file/create",
+            params={"projectId": space_id, "taskId": task_id},
+            files={"file": (filename, content, content_type)},
+        )
+        return dict(payload) if isinstance(payload, dict) else {}
+
     def transition_task(self, task_id: int, target_status_id: int) -> None:
         """Move a task to another status.
 

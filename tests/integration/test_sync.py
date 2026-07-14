@@ -146,6 +146,7 @@ class JagaSyncTest(APITestCase):
             "comment_on_status_change",
             "sync_comments",
             "auto_label",
+            "attach_event",
         }
         assert fields["sync_status_forward"]["default"] is True
         assert fields["resolved_status_category"]["default"] == CATEGORY_DONE
@@ -155,6 +156,9 @@ class JagaSyncTest(APITestCase):
         # An empty box is the off switch, so this default cannot be sourced from Jaga either —
         # and it must be the same literal the create falls back to (see `issues._auto_label`).
         assert fields["auto_label"]["default"] == DEFAULT_AUTO_LABEL
+        # Off by default: an event carries personal data, and the Jaga task may have a wider
+        # audience than the Sentry issue.
+        assert fields["attach_event"]["default"] is False
 
     def test_status_category_choices_are_offered_without_calling_jaga(self) -> None:
         """The settings page must render while Jaga is down — an org whose Jaga is unreachable

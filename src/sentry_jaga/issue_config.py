@@ -65,6 +65,20 @@ PERSISTED_FIELDS = ("project", "issue_type")
 # fallback the create falls back to before that config was ever saved (`issues.py`).
 DEFAULT_AUTO_LABEL = "sentry"
 
+# The hidden field that carries the Sentry issue through the create form and back to
+# `create_issue`, which is otherwise handed the form data and NOTHING else — no group, no event
+# (there is no "after create, with the event" hook anywhere in Sentry's issue contract).
+#
+# It is emitted only when there IS a group (see `build_create_config`), which is not a detail:
+# the alert-rule ticket modal renders this very form with `group=None`
+# (`IntegrationSerializer`: 'Query param "action" only attached in TicketRuleForm modal'), and
+# whatever the form returns is SAVED INTO THE RULE. A group id baked in there would be frozen
+# forever, and every task the rule ever filed would get the event of one long-dead issue
+# attached. No field, no attachment — the honest outcome.
+GROUP_ID_FIELD = "sentry_group_id"
+
+EVENT_ATTACHMENT_CONTENT_TYPE = "application/json"
+
 
 class NoProjectsError(JagaError):
     """The service account has no spaces available in Jaga."""
@@ -165,12 +179,28 @@ def _project_field(projects: list[Project], project_id: int) -> dict[str, Any]:
     }
 
 
+def _group_id_field(group_id: str | None) -> list[dict[str, Any]]:
+    """The Sentry issue, carried through the form as a hidden field — when there is one.
+
+    `hidden` is a field type Sentry's frontend knows (`static/app/components/forms/types.tsx`);
+    it renders as a `display: none` input whose default is submitted along with the rest of the
+    form. That is the whole trick: `create_issue` gets the form data and nothing else, so this is
+    the only way the issue can reach it.
+
+    None means no field at all — see `GROUP_ID_FIELD` for why that matters for alert rules.
+    """
+    if group_id is None:
+        return []
+    return [{"name": GROUP_ID_FIELD, "type": "hidden", "default": group_id}]
+
+
 def build_create_config(
     client: JagaClient,
     params: dict[str, Any],
     title: str,
     description: str,
     defaults: dict[str, Any] | None = None,
+    group_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """The create-form cascade: space -> task type -> dynamic attributes.
 
@@ -179,11 +209,16 @@ def build_create_config(
     are only a starting point: `_selected_id` still validates them against what Jaga offers
     *now*, so a remembered space the service account has since lost access to falls back to the
     first available one instead of rendering a form that cannot be submitted.
+
+    `group_id` is the Sentry issue the form was opened from, if any — see `_group_id_field`.
     """
     selection = _with_defaults(params, defaults)
     projects = _require_projects(client)
     project_id = _selected_id(selection, "project", [p.id for p in projects])
-    fields: list[dict[str, Any]] = [_project_field(projects, project_id)]
+    fields: list[dict[str, Any]] = [
+        _project_field(projects, project_id),
+        *_group_id_field(group_id),
+    ]
 
     task_types = client.get_task_types(project_id)
     if not task_types:
@@ -280,6 +315,34 @@ def create_task_from_form(
         "description": "",
         "metadata": {"task_id": task.id},
     }
+
+
+def _event_attachment_name(event_id: str) -> str:
+    """The file name the event is attached under.
+
+    The event id is in the name on purpose: a task can be filed from an issue more than once,
+    and two attachments called `sentry-event.json` on the same task tell nobody which event is
+    which. An event with no id is not a thing Sentry produces, but the fallback costs a line.
+    """
+    return f"sentry-event-{event_id}.json" if event_id else "sentry-event.json"
+
+
+def attach_event_json(
+    client: JagaClient, *, space_id: int, task_id: int, event_id: str, content: bytes
+) -> dict[str, Any]:
+    """Attach the JSON of a Sentry event to a task that has just been created.
+
+    The serialization is the Sentry layer's job (only it can see an event); what the core owns is
+    the name, the content type and the call. Jaga wants the space as well as the task: attachments
+    are filed under a space (see `JagaClient.attach_file`).
+    """
+    return client.attach_file(
+        space_id,
+        task_id,
+        _event_attachment_name(event_id),
+        content,
+        EVENT_ATTACHMENT_CONTENT_TYPE,
+    )
 
 
 def _comment_field(sentry_url: str | None) -> list[dict[str, Any]]:

@@ -19,10 +19,13 @@ from sentry_jaga.issue_config import (
     CATEGORY_DONE,
     CATEGORY_IN_PROGRESS,
     CATEGORY_TODO,
+    EVENT_ATTACHMENT_CONTENT_TYPE,
+    GROUP_ID_FIELD,
     MIN_QUERY_LENGTH,
     PERSISTED_FIELDS,
     NoProjectsError,
     apply_status_sync,
+    attach_event_json,
     build_create_config,
     build_link_config,
     create_task_from_form,
@@ -145,6 +148,7 @@ class FakeClient:
         self.statuses_requested: list[int] = []
         self.tasks_fetched: list[str] = []
         self.labels_resolved: list[str] = []
+        self.attachments: list[tuple[int, int, str, bytes, str]] = []
 
     def get_projects(self) -> list[Project]:
         return self._projects
@@ -208,6 +212,12 @@ class FakeClient:
 
     def transition_task(self, task_id: int, target_status_id: int) -> None:
         self.transitions.append((task_id, target_status_id))
+
+    def attach_file(
+        self, space_id: int, task_id: int, filename: str, content: bytes, content_type: str
+    ) -> dict[str, Any]:
+        self.attachments.append((space_id, task_id, filename, content, content_type))
+        return {"id": 1901762, "attachName": filename}
 
 
 def _by_name(fields: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -518,6 +528,68 @@ def test_create_task_from_form_rejects_empty_form() -> None:
     """An empty form is refused before the injected cells make the payload look non-empty."""
     with pytest.raises(JagaError):
         create_task_from_form(FakeClient(), {"project": "1", "issue_type": "10"})
+
+
+# --- carrying the Sentry issue through the form, and the event onto the task ---------------
+
+
+def test_the_create_form_carries_the_sentry_issue_in_a_hidden_field() -> None:
+    """`create_issue` is handed the form data and NOTHING else — no group, no event. A hidden
+    field is how the issue gets there: Sentry's frontend submits its default along with the rest
+    of the form."""
+    fields = build_create_config(FakeClient(), {}, "t", "d", group_id="4242")
+    by_name = _by_name(fields)
+
+    assert by_name[GROUP_ID_FIELD]["type"] == "hidden"
+    assert by_name[GROUP_ID_FIELD]["default"] == "4242"
+
+
+def test_the_form_of_an_alert_rule_carries_no_issue() -> None:
+    """The ticket-rule modal renders this form with no group and SAVES what it gets. A group id
+    in there would be frozen into the rule for good, and every task the rule ever filed would get
+    the event of one long-dead issue attached to it. Without a group there must be no field."""
+    fields = build_create_config(FakeClient(), {}, "t", "d")
+
+    assert GROUP_ID_FIELD not in _by_name(fields)
+
+
+def test_the_hidden_field_survives_a_task_type_less_space() -> None:
+    """The form stops at the space select when the space has no task types — and must still carry
+    the issue, or picking a space would silently throw it away."""
+    client = FakeClient(task_types=[])
+    fields = build_create_config(client, {}, "t", "d", group_id="4242")
+
+    assert _by_name(fields)[GROUP_ID_FIELD]["default"] == "4242"
+
+
+def test_attach_event_json_names_the_file_after_the_event() -> None:
+    """A task can be filed from the same issue twice; two files called `sentry-event.json` on
+    one task tell nobody which event is which."""
+    client = FakeClient()
+    attach_event_json(
+        client,
+        space_id=11361,
+        task_id=1703944,
+        event_id="deadbeef",
+        content=b'{"event_id": "deadbeef"}',
+    )
+
+    assert client.attachments == [
+        (
+            11361,
+            1703944,
+            "sentry-event-deadbeef.json",
+            b'{"event_id": "deadbeef"}',
+            EVENT_ATTACHMENT_CONTENT_TYPE,
+        )
+    ]
+
+
+def test_attach_event_json_falls_back_to_a_plain_name() -> None:
+    client = FakeClient()
+    attach_event_json(client, space_id=1, task_id=2, event_id="", content=b"{}")
+
+    assert client.attachments[0][2] == "sentry-event.json"
 
 
 # --- the label every task from Sentry carries ---------------------------------------------
