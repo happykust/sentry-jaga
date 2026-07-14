@@ -10,11 +10,13 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from django.urls import NoReverseMatch, reverse
 from sentry.integrations.mixins.issues import IssueBasicIntegration
 from sentry.models.group import Group
+from sentry.relay.datascrubbing import get_datascrubbing_settings
 from sentry.shared_integrations.exceptions import IntegrationError, IntegrationFormError
 from sentry.utils import json
 from sentry.utils.http import absolute_uri
@@ -25,6 +27,7 @@ from sentry_jaga.client.exceptions import JagaError, JagaNotFoundError
 from sentry_jaga.descriptions import build_description, build_title
 
 if TYPE_CHECKING:
+    from sentry.models.project import Project
     from sentry.services.eventstore.models import GroupEvent
 
 logger = logging.getLogger("sentry_jaga.issues")
@@ -193,12 +196,35 @@ class JagaIssuesMixin(IssueBasicIntegration):
         ).first()
         return group
 
-    def _event_json(self, event: GroupEvent) -> bytes:
+    @staticmethod
+    def _scrubs_ip_addresses(project: Project) -> bool:
+        """Has this project (or its organization) told Sentry not to keep IP addresses?
+
+        The answer is taken from `get_datascrubbing_settings` — the very function whose output
+        Sentry ships to Relay — and not from the two `get_option` calls it is made of. They are
+        the same two calls `EventJsonEndpoint` spells out by hand, and copying them here would
+        mean a third place to update the day upstream adds a third way of saying "no IPs".
+
+        The ignore is for the run against the Sentry sources, where the function is unannotated
+        and strict mode forbids calling it (cf. `get_group_body`; this module opts out of
+        `warn_unused_ignores` for exactly that reason).
+        """
+        settings: dict[str, Any] = get_datascrubbing_settings(project)  # type: ignore[no-untyped-call]
+        return bool(settings.get("scrubIpAddresses", False))
+
+    def _event_json(self, event: GroupEvent, project: Project) -> bytes:
         """The event as Sentry itself hands it to the outside world.
 
         `as_dict()` is the event's "normalized form for external consumers", and it is exactly
         what Sentry serves behind the JSON link on an event page (`EventJsonEndpoint`) — so what
-        lands on the Jaga task is byte for byte the file a user would have downloaded by hand.
+        lands on the Jaga task is the file a user would have downloaded by hand. This mirrors that
+        endpoint step for step, and the steps are not decoration:
+
+        * `datetime` is written out as an ISO-8601 string, as the endpoint writes it;
+        * the IP addresses in the span tags are scrubbed when the project asks for it. Relay took
+          them out of everywhere else at ingest, but never out of `spans[].sentry_tags` — see
+          `issue_config.scrub_span_ip_addresses`. A project that told Sentry to keep no IPs must
+          not have them exported to a tracker with a wider audience.
 
         The alternative, `serialize(event, user, EventSerializer())`, is the shape the Sentry UI
         renders (`entries[]`): it needs a user to serialize for — and on the alert-rule path there
@@ -207,8 +233,19 @@ class JagaIssuesMixin(IssueBasicIntegration):
         `sentry.utils.json` rather than the stdlib: `as_dict()` carries `datetime` objects (and
         can carry sets and Decimals), which Sentry's encoder knows how to write and the stdlib's
         raises on.
+
+        One thing is deliberately NOT mirrored: the endpoint wraps its scrub in a
+        `try/except Exception: capture_exception(...)` and then serves the event ANYWAY. That is
+        fail-open, which is a defensible trade for a page an authorized user is looking at, and
+        the wrong one for a file we are about to push into another system. A scrub that raises
+        here escapes into `_attach_event`, which logs it and attaches nothing at all.
         """
-        return str(json.dumps(event.as_dict())).encode()
+        data = event.as_dict()
+        if isinstance(data.get("datetime"), datetime):
+            data["datetime"] = data["datetime"].isoformat()
+        if self._scrubs_ip_addresses(project):
+            issue_config.scrub_span_ip_addresses(data)
+        return str(json.dumps(data)).encode()
 
     def _attach_event(self, data: dict[str, Any], result: dict[str, Any]) -> None:
         """Attach the JSON of the issue's latest event to the task just created from it.
@@ -237,7 +274,10 @@ class JagaIssuesMixin(IssueBasicIntegration):
                 space_id=int(data["project"]),
                 task_id=int(result["metadata"]["task_id"]),
                 event_id=str(event.event_id),
-                content=self._event_json(event),
+                # `group.project` and not `event.project`: the group is the one thing here that
+                # was looked up scoped to this organization (see `_group_from_form`), and the
+                # privacy settings must be read off the project the scoping vouched for.
+                content=self._event_json(event, group.project),
             )
         except Exception:
             logger.warning("jaga.issues.event_attachment_failed", extra={"key": key}, exc_info=True)

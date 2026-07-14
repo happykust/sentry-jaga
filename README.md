@@ -109,12 +109,21 @@ Organization Settings → Integrations → **Jaga** → Configure:
 | Attach the Sentry event to the task | **off** | Attach the JSON of the issue's latest event to the task, as a file. |
 
 **The event attachment is off by default on purpose — the file contains personal data.** It is
-the event exactly as Sentry stores it: the user's email and IP address, the request headers and
-body, cookies, and anything else your SDK sent. That is the same content Sentry shows behind the
-"JSON" link on an event page, but a Jaga task can have a much wider audience than a Sentry issue,
-and once a file is on a task it stays there. Turn this on only if that is acceptable — and note
-that what lands in the file is what Sentry *stored*: if you rely on Sentry's data-scrubbing, scrub
-at ingest (project settings → Security & Privacy), because nothing is stripped on the way out.
+the event as Sentry stores it: the user's email, the request headers and body, cookies, and
+anything else your SDK sent. That is the same content Sentry shows behind the "JSON" link on an
+event page, but a Jaga task can have a much wider audience than a Sentry issue, and once a file is
+on a task it stays there. Turn this on only if that is acceptable.
+
+**IP addresses are the one exception: the attachment honours the project's IP scrubbing.** If the
+project has *Prevent Storing of IP Addresses* on (or the organization requires it), no IP address
+leaves for Jaga — including the ones in span tags, which Sentry's ingest-time scrubbing does not
+reach and which its own JSON view strips on the way out. We strip them the same way, and for a
+stronger reason: that page shows the event to someone already allowed to see it, while this file
+leaves Sentry altogether.
+
+Nothing else is stripped on the way out. Everything the setting does **not** cover — the user's
+email, the request body, the headers — travels to Jaga as it is. If you need more of it gone, scrub
+it at ingest (project settings → Security & Privacy): what Sentry never stored cannot be attached.
 
 It does **not** apply to tasks filed by an alert rule — see [Limitations](#limitations).
 
@@ -187,9 +196,16 @@ is cached in Sentry's Django cache.
   event page — and uploaded as `sentry-event-<event id>.json`
   (`POST /v1/attacher/file/create?projectId=…&taskId=…`, multipart).
 
+  Before it is uploaded, the event goes through the same treatment Sentry's own JSON view gives
+  it: if the project (or the organization) asks for IP scrubbing, the addresses in
+  `spans[].sentry_tags` are removed — Relay strips IPs everywhere else at ingest, but never there,
+  because those tags are derived after that pass. Whether the project asked is read from Sentry's
+  own `get_datascrubbing_settings`, so an organization-wide *Require IP scrubbing* counts too.
+
   It happens **after** the task is created, and a failed upload is logged and swallowed: the task
   exists by then, and losing the create over an attachment would be a worse bug than losing the
-  attachment.
+  attachment. A scrub that somehow failed, on the other hand, means **no attachment at all** — the
+  one place we deliberately do not copy the JSON view, which serves the event anyway.
 
   The issue reaches the create through a **hidden field** in the form (`sentry_group_id`). Sentry
   hands `create_issue()` the submitted form and nothing else — no group, no event — and there is

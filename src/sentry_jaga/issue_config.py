@@ -79,6 +79,9 @@ GROUP_ID_FIELD = "sentry_group_id"
 
 EVENT_ATTACHMENT_CONTENT_TYPE = "application/json"
 
+# What Sentry puts in a span's `user` tag in place of an IP address it is not allowed to show.
+SCRUBBED_IP_TAG = "ip:[ip]"
+
 
 class NoProjectsError(JagaError):
     """The service account has no spaces available in Jaga."""
@@ -315,6 +318,33 @@ def create_task_from_form(
         "description": "",
         "metadata": {"task_id": task.id},
     }
+
+
+def scrub_span_ip_addresses(event: dict[str, Any]) -> None:
+    """Take the IP addresses out of an event's span tags, in place.
+
+    This is the one piece of scrubbing a *reader* of an event still has to do. When a project
+    turns on `sentry:scrub_ip_address` (or its organization requires it), Relay strips IPs at
+    ingest — from `user.ip_address` and everywhere else its PII config reaches — so the stored
+    event is already clean. What that pass never touched is `spans[].sentry_tags`, which are
+    derived downstream of it: a project that told Sentry to keep no IP addresses still has them
+    sitting in there.
+
+    Sentry itself patches this over on the way out, in `EventJsonEndpoint` — the JSON link on an
+    event page — and this mirrors it exactly, `ip:[ip]` and all. It has to: the whole point of
+    the option is that the admin does not want those addresses seen, and we are about to carry
+    the event OUT of Sentry, into a tracker with a wider audience.
+
+    A `user` tag that is not an address (`username:foo`) is left alone, as upstream leaves it.
+    """
+    for span in event.get("spans") or []:
+        tags = span.get("sentry_tags") if isinstance(span, dict) else None
+        if not isinstance(tags, dict):
+            continue
+        tags.pop("user.ip", None)
+        user = tags.get("user")
+        if isinstance(user, str) and user.startswith("ip:"):
+            tags["user"] = SCRUBBED_IP_TAG
 
 
 def _event_attachment_name(event_id: str) -> str:

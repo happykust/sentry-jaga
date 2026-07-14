@@ -18,6 +18,10 @@ from sentry_jaga.issue_config import GROUP_ID_FIELD
 # toggle on — to attach it), and an event comes from Snuba.
 pytestmark = [requires_snuba]
 
+# The IP address of the user the event was captured from — the thing `sentry:scrub_ip_address`
+# exists to keep out of Sentry, and therefore out of Jaga.
+CUSTOMER_IP = "203.0.113.7"
+
 BASE = "https://jaga.example.com"
 API = f"{BASE}/external-api"
 AUTH_OK = {
@@ -599,7 +603,24 @@ class JagaEventAttachmentTest(APITestCase):
                 "message": "Login is broken",
                 "timestamp": before_now(minutes=1).isoformat(),
                 # The very thing the toggle exists for: an event carries personal data.
-                "user": {"email": "customer@example.com", "ip_address": "203.0.113.7"},
+                "user": {"email": "customer@example.com", "ip_address": CUSTOMER_IP},
+                # Span tags carry the IP a second time — and, unlike everything else, they carry
+                # it straight through Relay's ingest-time scrubbing. See the scrubbing tests.
+                "spans": [
+                    {
+                        "span_id": "aaaaaaaaaaaaaaaa",
+                        "trace_id": "b" * 32,
+                        "op": "db",
+                        "start_timestamp": before_now(minutes=2).timestamp(),
+                        "timestamp": before_now(minutes=1).timestamp(),
+                        "sentry_tags": {
+                            "user.ip": CUSTOMER_IP,
+                            "user": f"ip:{CUSTOMER_IP}",
+                            # Not an IP address, and so not the scrub's business.
+                            "transaction": "GET /login",
+                        },
+                    }
+                ],
             },
             project_id=self.project.id,
         )
@@ -633,6 +654,17 @@ class JagaEventAttachmentTest(APITestCase):
     @staticmethod
     def _uploads() -> list[responses.Call]:
         return [c for c in responses.calls if "attacher/file/create" in c.request.url]
+
+    def _uploaded_event(self) -> dict:
+        """The event JSON, unwrapped from the multipart body it was uploaded in."""
+        body = bytes(self._uploads()[0].request.body)
+        payload = body.split(b"\r\n\r\n", 1)[1].rsplit(b"\r\n--", 1)[0]
+        return dict(json.loads(payload))
+
+    def _uploaded_span_tags(self) -> dict:
+        spans = self._uploaded_event()["spans"]
+        assert len(spans) == 1
+        return dict(spans[0]["sentry_tags"])
 
     @responses.activate
     def test_nothing_is_attached_until_an_admin_turns_it_on(self) -> None:
@@ -670,6 +702,56 @@ class JagaEventAttachmentTest(APITestCase):
         assert b'"event_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' in body
         # ...personal data and all. This is precisely why the toggle is off by default.
         assert b"customer@example.com" in body
+
+    # --- the project's IP scrubbing ---------------------------------------------------------
+    #
+    # A project (or its whole organization) can tell Sentry to keep no IP addresses. Relay honours
+    # that at ingest — everywhere except `spans[].sentry_tags`, which are derived after that pass
+    # and therefore still hold the address. Sentry patches over it on the way out, in
+    # `EventJsonEndpoint`; we must do the same, and for a stronger reason: the endpoint shows the
+    # event to someone who is already authorized to see it, while we carry it OUT of Sentry, into
+    # a tracker whose audience the Sentry admin does not control.
+
+    @responses.activate
+    def test_the_span_ips_are_scrubbed_when_the_project_asks_for_it(self) -> None:
+        self._mock_jaga()
+        self.installation.update_organization_config({"attach_event": True})
+        self.project.update_option("sentry:scrub_ip_address", True)
+
+        self.installation.create_issue(self._form_data())
+
+        # Sentry's own replacement, verbatim (`EventJsonEndpoint`): the `user` tag stays, the
+        # address in it goes, `user.ip` goes altogether — and a tag that is not an address is
+        # left exactly as it was.
+        assert self._uploaded_span_tags() == {"transaction": "GET /login", "user": "ip:[ip]"}
+
+    @responses.activate
+    def test_the_span_ips_are_scrubbed_when_the_organization_requires_it(self) -> None:
+        """The organization-wide setting overrules the project, and must be honoured too — which
+        is why the gate is Sentry's own `get_datascrubbing_settings` and not one `get_option`."""
+        self._mock_jaga()
+        self.installation.update_organization_config({"attach_event": True})
+        self.organization.update_option("sentry:require_scrub_ip_address", True)
+
+        self.installation.create_issue(self._form_data())
+
+        assert self._uploaded_span_tags() == {"transaction": "GET /login", "user": "ip:[ip]"}
+
+    @responses.activate
+    def test_the_span_ips_survive_when_the_project_does_not_ask(self) -> None:
+        """The other half, and the one that makes the test above mean something: with the setting
+        off, the IP is there — so a green test above is the scrub working, not the fixture being
+        empty. This is also the proof that Relay does NOT clean span tags at ingest."""
+        self._mock_jaga()
+        self.installation.update_organization_config({"attach_event": True})
+
+        self.installation.create_issue(self._form_data())
+
+        assert self._uploaded_span_tags() == {
+            "transaction": "GET /login",
+            "user.ip": CUSTOMER_IP,
+            "user": f"ip:{CUSTOMER_IP}",
+        }
 
     @responses.activate
     def test_a_task_filed_by_an_alert_rule_gets_no_attachment(self) -> None:

@@ -13,8 +13,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **The Sentry event can be attached to the task** as a JSON file (`Attach the Sentry event to
   the task`, **off by default**). It is the event as Sentry itself serves it behind the "JSON"
   link on an event page (`Event.as_dict()`), and it therefore carries personal data — the user's
-  email and IP address, request headers and body — which is why an admin has to turn it on
-  deliberately. A failed upload is logged and swallowed: the task is already created by then.
+  email, request headers and body — which is why an admin has to turn it on deliberately. A failed
+  upload is logged and swallowed: the task is already created by then.
+
+  The attachment **honours the project's IP scrubbing**: with *Prevent Storing of IP Addresses* on
+  (or required organization-wide), the IP addresses in `spans[].sentry_tags` are stripped before
+  the file leaves — Relay removes IPs everywhere else at ingest, but not from those tags, which is
+  why Sentry's own JSON view strips them on the way out too. A privacy setting the admin turned on
+  in Sentry must not be undone by exporting the event to a tracker with a wider audience.
 
   It does **not** apply to tasks filed by an alert rule. The rule modal renders the create form
   with no issue behind it and saves the result into the rule, so the hidden field that carries the

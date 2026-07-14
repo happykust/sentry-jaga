@@ -23,6 +23,7 @@ from sentry_jaga.issue_config import (
     GROUP_ID_FIELD,
     MIN_QUERY_LENGTH,
     PERSISTED_FIELDS,
+    SCRUBBED_IP_TAG,
     NoProjectsError,
     apply_status_sync,
     attach_event_json,
@@ -35,6 +36,7 @@ from sentry_jaga.issue_config import (
     post_task_comment,
     reachable_status_ids,
     resolve_target_status,
+    scrub_span_ip_addresses,
     search_task_summaries,
     status_comment,
 )
@@ -590,6 +592,51 @@ def test_attach_event_json_falls_back_to_a_plain_name() -> None:
     attach_event_json(client, space_id=1, task_id=2, event_id="", content=b"{}")
 
     assert client.attachments[0][2] == "sentry-event.json"
+
+
+# --- honouring the project's IP scrubbing ---------------------------------------------------
+#
+# Mirrors what Sentry's own `EventJsonEndpoint` does on the way out. Relay strips IP addresses at
+# ingest when the project asks for it — everywhere except `spans[].sentry_tags`, which are derived
+# after that pass. Whether the project asked at all is the Sentry layer's question (it reads the
+# project's options); what to take out is this.
+
+
+def _event_with_span_tags(**tags: Any) -> dict[str, Any]:
+    return {"event_id": "abc", "spans": [{"span_id": "s1", "sentry_tags": dict(tags)}]}
+
+
+def test_scrub_span_ip_addresses_removes_the_ip_tag() -> None:
+    event = _event_with_span_tags(**{"user.ip": "203.0.113.7", "op": "db"})
+    scrub_span_ip_addresses(event)
+
+    assert event["spans"][0]["sentry_tags"] == {"op": "db"}
+
+
+def test_scrub_span_ip_addresses_masks_a_user_identified_by_ip() -> None:
+    """Sentry's own replacement, verbatim: the tag survives, the address does not."""
+    event = _event_with_span_tags(user="ip:203.0.113.7")
+    scrub_span_ip_addresses(event)
+
+    assert event["spans"][0]["sentry_tags"]["user"] == SCRUBBED_IP_TAG
+
+
+def test_scrub_span_ip_addresses_leaves_a_user_who_is_not_an_ip_alone() -> None:
+    """`sentry:scrub_ip_address` is about addresses, not about identity: a user tag that names a
+    username is not an IP address and must survive. Upstream draws the line in the same place."""
+    event = _event_with_span_tags(**{"user": "username:foo", "user.ip": "203.0.113.7"})
+    scrub_span_ip_addresses(event)
+
+    assert event["spans"][0]["sentry_tags"] == {"user": "username:foo"}
+
+
+def test_scrub_span_ip_addresses_tolerates_an_event_without_spans() -> None:
+    """An error event carries no spans at all — the common case, and not an error."""
+    for event in ({"event_id": "abc"}, {"spans": None}, {"spans": []}, {"spans": [{}]}):
+        scrub_span_ip_addresses(event)  # must not raise
+
+    junk: dict[str, Any] = {"spans": [{"sentry_tags": None}, "not-a-span"]}
+    scrub_span_ip_addresses(junk)
 
 
 # --- the label every task from Sentry carries ---------------------------------------------
