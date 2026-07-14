@@ -4,12 +4,12 @@ build-backend = "hatchling.build"
 
 [project]
 name = "sentry-jaga"
-version = "0.1.0"
+version = "1.0.0"
 description = "Sentry integration for the Jaga issue tracker (Rostelecom)"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.13"
-authors = [{ name = "Kirill Nikolaevskiy", email = "lhappykust@gmail.com" }]
+authors = [{ name = "Kirill Nikolaevsky", email = "me@happykust.dev" }]
 keywords = ["sentry", "jaga", "integration", "issue-tracker"]
 classifiers = [
     "Development Status :: 4 - Beta",
