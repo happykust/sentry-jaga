@@ -87,8 +87,14 @@ fabric.properties
 [Ll]ib64
 [Ll]ocal
 [Ss]cripts
-# ...but not our own probe/diagnostic scripts (the pattern above targets Windows venvs).
+# ...but not our own scripts/ directory (the pattern above targets Windows venvs).
 !/scripts/
+
+# The probes are throwaway tools that talk to a real Jaga instance with real credentials, and
+# they are written against whatever question was open at the time. What they found is not kept
+# here but in the code they justify — see the docstrings of `JagaClient.transition_task`,
+# `attach_file`, `get_or_create_label` and `fields.injected_attributes`. Keep yours locally.
+/scripts/probe_*.py
 pyvenv.cfg
 .venv
 pip-selfcheck.json
