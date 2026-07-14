@@ -16,11 +16,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   email, request headers and body — which is why an admin has to turn it on deliberately. A failed
   upload is logged and swallowed: the task is already created by then.
 
-  The attachment **honours the project's IP scrubbing**: with *Prevent Storing of IP Addresses* on
-  (or required organization-wide), the IP addresses in `spans[].sentry_tags` are stripped before
-  the file leaves — Relay removes IPs everywhere else at ingest, but not from those tags, which is
-  why Sentry's own JSON view strips them on the way out too. A privacy setting the admin turned on
-  in Sentry must not be undone by exporting the event to a tracker with a wider audience.
+  The attachment **honours the project's IP scrubbing**, and is deliberately stricter about it
+  than Sentry itself. With *Prevent Storing of IP Addresses* on (or required organization-wide),
+  `user.ip_address` is nulled and the addresses in `spans[].sentry_tags` are stripped before the
+  file leaves. The span tags need it because Sentry's ingest-time scrubbing never reaches them —
+  its own JSON view strips them on the way out for the same reason. `user.ip_address` needs it for
+  events stored *before* the setting was turned on: Sentry never cleaned those, and its JSON view
+  shows the address. That page is one authorized person reading one event inside Sentry; this file
+  is an export into a tracker with a wider audience, so the admin's "no IP addresses" wins over
+  matching the UI. Nothing but IP addresses is stripped — see the README.
 
   It does **not** apply to tasks filed by an alert rule. The rule modal renders the create form
   with no issue behind it and saves the result into the rule, so the hidden field that carries the

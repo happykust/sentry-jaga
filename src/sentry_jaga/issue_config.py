@@ -320,30 +320,51 @@ def create_task_from_form(
     }
 
 
-def scrub_span_ip_addresses(event: dict[str, Any]) -> None:
-    """Take the IP addresses out of an event's span tags, in place.
+def scrub_ip_addresses(event: dict[str, Any]) -> None:
+    """Take the IP addresses out of an event, in place, for a project that asked for none.
 
-    This is the one piece of scrubbing a *reader* of an event still has to do. When a project
-    turns on `sentry:scrub_ip_address` (or its organization requires it), Relay strips IPs at
-    ingest — from `user.ip_address` and everywhere else its PII config reaches — so the stored
-    event is already clean. What that pass never touched is `spans[].sentry_tags`, which are
-    derived downstream of it: a project that told Sentry to keep no IP addresses still has them
-    sitting in there.
+    Two places, and they are here for two different reasons.
 
-    Sentry itself patches this over on the way out, in `EventJsonEndpoint` — the JSON link on an
-    event page — and this mirrors it exactly, `ip:[ip]` and all. It has to: the whole point of
-    the option is that the admin does not want those addresses seen, and we are about to carry
-    the event OUT of Sentry, into a tracker with a wider audience.
+    `spans[].sentry_tags` — Relay's ingest-time scrubbing does not reach these (they are derived
+    after that pass), so even an event ingested under the setting still carries the address here.
+    Sentry patches over it on the way out, in `EventJsonEndpoint`, and this mirrors that exactly:
+    `user.ip` dropped, an `ip:<addr>` user tag rewritten to `ip:[ip]`. A `user` tag that is not an
+    address (`username:foo`) is left alone, as upstream leaves it.
 
-    A `user` tag that is not an address (`username:foo`) is left alone, as upstream leaves it.
+    `user.ip_address` — and here we are DELIBERATELY STRICTER THAN SENTRY. Do not "fix" this back
+    to match upstream:
+
+    * Relay removes this field at ingest (its IP config is `@anything:remove` on
+      `$user.ip_address || $http.env.REMOTE_ADDR || $sdk.client_ip || $span.sentry_tags.'user.ip'`),
+      so an event ingested *while* the setting was on has nothing here anyway — this is a no-op
+      for it, and costs nothing.
+    * An event ingested BEFORE an admin turned the setting on was never touched by that pass, and
+      still holds the address. `EventJsonEndpoint` shows it, and that is defensible for a page: it
+      is a person who is already inside Sentry, and already authorized, reading one event. This
+      file is not that. It is an EXPORT, out of Sentry and into a tracker whose audience the
+      Sentry admin does not control, where it will sit on a task for as long as the task lives.
+      An admin who turned IP scrubbing on said "we do not want IP addresses"; honouring that
+      intent is worth more than matching the Sentry UI byte for byte.
+
+    The value becomes `None` rather than `"[ip]"`, because that is what Sentry's own scrubbing
+    produces for this field: `@anything:remove` nulls it, and `[ip]` is what Relay writes only
+    where an address sits INSIDE a longer string that has to keep a meaning (a forwarded-for
+    header, an `ip:<addr>` tag). Writing `"[ip]"` into a dedicated address field would invent a
+    value Sentry never puts there — and would leave an old event still telling anyone reading the
+    file apart from one ingested under the setting, which is precisely the difference we are here
+    to erase.
     """
+    user = event.get("user")
+    if isinstance(user, dict) and "ip_address" in user:
+        user["ip_address"] = None
+
     for span in event.get("spans") or []:
         tags = span.get("sentry_tags") if isinstance(span, dict) else None
         if not isinstance(tags, dict):
             continue
         tags.pop("user.ip", None)
-        user = tags.get("user")
-        if isinstance(user, str) and user.startswith("ip:"):
+        user_tag = tags.get("user")
+        if isinstance(user_tag, str) and user_tag.startswith("ip:"):
             tags["user"] = SCRUBBED_IP_TAG
 
 

@@ -36,7 +36,7 @@ from sentry_jaga.issue_config import (
     post_task_comment,
     reachable_status_ids,
     resolve_target_status,
-    scrub_span_ip_addresses,
+    scrub_ip_addresses,
     search_task_summaries,
     status_comment,
 )
@@ -596,47 +596,86 @@ def test_attach_event_json_falls_back_to_a_plain_name() -> None:
 
 # --- honouring the project's IP scrubbing ---------------------------------------------------
 #
-# Mirrors what Sentry's own `EventJsonEndpoint` does on the way out. Relay strips IP addresses at
-# ingest when the project asks for it — everywhere except `spans[].sentry_tags`, which are derived
-# after that pass. Whether the project asked at all is the Sentry layer's question (it reads the
-# project's options); what to take out is this.
+# The span tags mirror what Sentry's own `EventJsonEndpoint` does on the way out: Relay strips IP
+# addresses at ingest, but never reaches `spans[].sentry_tags`, which are derived after that pass.
+#
+# `user.ip_address` goes FURTHER than the endpoint, on purpose: Relay only ever cleaned the events
+# ingested after the setting was turned on, and the endpoint shows the addresses in the older ones.
+# A page inside Sentry may; a file exported to another tracker may not.
+#
+# Whether the project asked for any of this is the Sentry layer's question (it reads the project's
+# options); what to take out is this.
 
 
 def _event_with_span_tags(**tags: Any) -> dict[str, Any]:
     return {"event_id": "abc", "spans": [{"span_id": "s1", "sentry_tags": dict(tags)}]}
 
 
-def test_scrub_span_ip_addresses_removes_the_ip_tag() -> None:
+def test_scrub_ip_addresses_removes_the_ip_tag() -> None:
     event = _event_with_span_tags(**{"user.ip": "203.0.113.7", "op": "db"})
-    scrub_span_ip_addresses(event)
+    scrub_ip_addresses(event)
 
     assert event["spans"][0]["sentry_tags"] == {"op": "db"}
 
 
-def test_scrub_span_ip_addresses_masks_a_user_identified_by_ip() -> None:
+def test_scrub_ip_addresses_masks_a_user_identified_by_ip() -> None:
     """Sentry's own replacement, verbatim: the tag survives, the address does not."""
     event = _event_with_span_tags(user="ip:203.0.113.7")
-    scrub_span_ip_addresses(event)
+    scrub_ip_addresses(event)
 
     assert event["spans"][0]["sentry_tags"]["user"] == SCRUBBED_IP_TAG
 
 
-def test_scrub_span_ip_addresses_leaves_a_user_who_is_not_an_ip_alone() -> None:
+def test_scrub_ip_addresses_leaves_a_user_who_is_not_an_ip_alone() -> None:
     """`sentry:scrub_ip_address` is about addresses, not about identity: a user tag that names a
     username is not an IP address and must survive. Upstream draws the line in the same place."""
     event = _event_with_span_tags(**{"user": "username:foo", "user.ip": "203.0.113.7"})
-    scrub_span_ip_addresses(event)
+    scrub_ip_addresses(event)
 
     assert event["spans"][0]["sentry_tags"] == {"user": "username:foo"}
 
 
-def test_scrub_span_ip_addresses_tolerates_an_event_without_spans() -> None:
+def test_scrub_ip_addresses_tolerates_an_event_without_spans() -> None:
     """An error event carries no spans at all — the common case, and not an error."""
     for event in ({"event_id": "abc"}, {"spans": None}, {"spans": []}, {"spans": [{}]}):
-        scrub_span_ip_addresses(event)  # must not raise
+        scrub_ip_addresses(event)  # must not raise
 
     junk: dict[str, Any] = {"spans": [{"sentry_tags": None}, "not-a-span"]}
-    scrub_span_ip_addresses(junk)
+    scrub_ip_addresses(junk)
+
+
+def test_scrub_ip_addresses_nulls_the_user_ip() -> None:
+    """The step Sentry's own JSON view does NOT take. An event stored before the admin turned the
+    setting on was never cleaned by Relay and still carries the address; the page shows it, and we
+    must not — the file leaves Sentry for a tracker with a wider audience.
+
+    `None`, not `"[ip]"`: nulling is what Sentry's own scrubbing does to this field
+    (`@anything:remove`), so an old event comes out indistinguishable from one ingested under the
+    setting. `[ip]` is what Relay writes only where an address sits inside a longer string.
+    """
+    event: dict[str, Any] = {
+        "user": {"id": "42", "email": "customer@example.com", "ip_address": "203.0.113.7"}
+    }
+    scrub_ip_addresses(event)
+
+    assert event["user"]["ip_address"] is None
+    # And only the address: the setting is about IP addresses, not about identity.
+    assert event["user"]["id"] == "42"
+    assert event["user"]["email"] == "customer@example.com"
+
+
+def test_scrub_ip_addresses_leaves_a_user_without_an_address_alone() -> None:
+    """No key is not the same as a key to null: an event ingested under the setting has already
+    been nulled by Relay, and one that never carried an address must not grow the field."""
+    event: dict[str, Any] = {"user": {"email": "customer@example.com"}}
+    scrub_ip_addresses(event)
+
+    assert event["user"] == {"email": "customer@example.com"}
+
+
+def test_scrub_ip_addresses_tolerates_an_event_without_a_user() -> None:
+    for event in ({"event_id": "abc"}, {"user": None}, {"user": "not-a-dict"}):
+        scrub_ip_addresses(event)  # must not raise
 
 
 # --- the label every task from Sentry carries ---------------------------------------------

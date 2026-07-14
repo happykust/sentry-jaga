@@ -114,16 +114,24 @@ anything else your SDK sent. That is the same content Sentry shows behind the "J
 event page, but a Jaga task can have a much wider audience than a Sentry issue, and once a file is
 on a task it stays there. Turn this on only if that is acceptable.
 
-**IP addresses are the one exception: the attachment honours the project's IP scrubbing.** If the
-project has *Prevent Storing of IP Addresses* on (or the organization requires it), no IP address
-leaves for Jaga — including the ones in span tags, which Sentry's ingest-time scrubbing does not
-reach and which its own JSON view strips on the way out. We strip them the same way, and for a
-stronger reason: that page shows the event to someone already allowed to see it, while this file
-leaves Sentry altogether.
+**IP addresses are the exception: the attachment honours the project's IP scrubbing, and is
+stricter about it than Sentry's own JSON view.** With *Prevent Storing of IP Addresses* on for the
+project (or required for the whole organization), the attached file has:
 
-Nothing else is stripped on the way out. Everything the setting does **not** cover — the user's
-email, the request body, the headers — travels to Jaga as it is. If you need more of it gone, scrub
-it at ingest (project settings → Security & Privacy): what Sentry never stored cannot be attached.
+- `user.ip_address` nulled — **even for events stored before you turned the setting on.** Sentry
+  cleans events at ingest, so older ones still hold the address, and its own JSON view shows it.
+  We do not: that page is one authorized person reading one event inside Sentry, while this file
+  is an *export* into a tracker whose audience you do not control, and it stays on the task for as
+  long as the task does. Turning the setting on means "we do not want IP addresses"; that intent
+  outranks matching the Sentry UI byte for byte.
+- the addresses in span tags removed (`user.ip` dropped, an `ip:<addr>` user tag rewritten to
+  `ip:[ip]`) — Sentry's ingest-time scrubbing never reaches those, which is why its JSON view
+  strips them on the way out too.
+
+**Nothing but IP addresses is stripped.** The user's email, the request body, the headers, cookies
+— everything the setting does not cover travels to Jaga exactly as Sentry stored it. If you need
+more of it gone, scrub it at ingest (project settings → Security & Privacy): what Sentry never
+stored cannot be attached. One known gap is listed under [Limitations](#limitations).
 
 It does **not** apply to tasks filed by an alert rule — see [Limitations](#limitations).
 
@@ -196,11 +204,12 @@ is cached in Sentry's Django cache.
   event page — and uploaded as `sentry-event-<event id>.json`
   (`POST /v1/attacher/file/create?projectId=…&taskId=…`, multipart).
 
-  Before it is uploaded, the event goes through the same treatment Sentry's own JSON view gives
-  it: if the project (or the organization) asks for IP scrubbing, the addresses in
-  `spans[].sentry_tags` are removed — Relay strips IPs everywhere else at ingest, but never there,
-  because those tags are derived after that pass. Whether the project asked is read from Sentry's
-  own `get_datascrubbing_settings`, so an organization-wide *Require IP scrubbing* counts too.
+  Before it is uploaded, the event is scrubbed of IP addresses if the project (or the
+  organization) asks for it — `user.ip_address` is nulled and the addresses in
+  `spans[].sentry_tags` are removed. Whether it asked is read from Sentry's own
+  `get_datascrubbing_settings`, the very function whose output Sentry feeds to Relay, so an
+  organization-wide *Require IP scrubbing* counts too and we cannot drift from upstream on what
+  the setting means.
 
   It happens **after** the task is created, and a failed upload is logged and swallowed: the task
   exists by then, and losing the create over an attachment would be a worse bug than losing the
@@ -250,6 +259,15 @@ the package creates no tables of its own.
   If a task type marks one of them as **required**, the create will fail with Jaga's own
   message naming the field, and the plugin logs a `required_attribute_not_supported` warning
   with its mnemonic. Either make the field optional in Jaga, or create such tasks by hand.
+- **The IP scrubbing of the attachment covers the dedicated address fields, not every address in
+  the event.** With IP scrubbing on, `user.ip_address`, `sdk.client_ip` (which Sentry drops itself)
+  and the span tags come out clean. What can still hold an address is an event **stored before you
+  turned the setting on**: Sentry cleaned nothing in it at ingest, so `request.env.REMOTE_ADDR`, a
+  forwarded-for header, or a `user` tag reading `ip:1.2.3.4` may survive in the attached file.
+  Events ingested *after* the setting was turned on have none of these — Sentry removed them
+  before storing. Reproducing Sentry's full IP-matching pass over every string of an event is not
+  something this package does; if the older events matter to you, do not turn the attachment on
+  until they have aged out.
 - **The event attachment does not work for tasks filed by an alert rule.** The rule modal renders
   the create form with no issue behind it (Sentry calls `get_create_issue_config(None, …)` there)
   and **saves whatever the form returns into the rule**. So the hidden field that carries the

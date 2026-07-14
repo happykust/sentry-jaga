@@ -221,10 +221,11 @@ class JagaIssuesMixin(IssueBasicIntegration):
         endpoint step for step, and the steps are not decoration:
 
         * `datetime` is written out as an ISO-8601 string, as the endpoint writes it;
-        * the IP addresses in the span tags are scrubbed when the project asks for it. Relay took
-          them out of everywhere else at ingest, but never out of `spans[].sentry_tags` — see
-          `issue_config.scrub_span_ip_addresses`. A project that told Sentry to keep no IPs must
-          not have them exported to a tracker with a wider audience.
+        * the IP addresses are scrubbed when the project asks for it — from the span tags, which
+          Relay's ingest-time pass never reaches, and (going one step FURTHER than the endpoint)
+          from `user.ip_address`, which it does reach for new events but not for events stored
+          before an admin turned the setting on. A page inside Sentry may show those; a file we
+          push into another system may not. See `issue_config.scrub_ip_addresses`.
 
         The alternative, `serialize(event, user, EventSerializer())`, is the shape the Sentry UI
         renders (`entries[]`): it needs a user to serialize for — and on the alert-rule path there
@@ -244,7 +245,7 @@ class JagaIssuesMixin(IssueBasicIntegration):
         if isinstance(data.get("datetime"), datetime):
             data["datetime"] = data["datetime"].isoformat()
         if self._scrubs_ip_addresses(project):
-            issue_config.scrub_span_ip_addresses(data)
+            issue_config.scrub_ip_addresses(data)
         return str(json.dumps(data)).encode()
 
     def _attach_event(self, data: dict[str, Any], result: dict[str, Any]) -> None:
