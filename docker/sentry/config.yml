@@ -1,0 +1,30 @@
+# Sentry's YAML-side options for the local UI stand (docker-compose.ui.yml).
+# The Python-side settings live next door in sentry.conf.py.
+#
+# THIS IS A LOCAL STAND, NOT PRODUCTION. The secret key below is a fixed throwaway value so
+# that the stand can be torn down and brought back up without invalidating sessions; it is
+# public by construction and must never be reused anywhere real.
+
+system.secret-key: "local-ui-stand-not-a-secret-0123456789abcdef"
+system.url-prefix: "http://localhost:9000"
+system.admin-email: "admin@example.com"
+
+# No SMTP on the stand: `dummy` swallows outgoing mail instead of failing the request that
+# triggered it (invites, "issue assigned" notifications, ...).
+mail.backend: "dummy"
+
+filestore.backend: "filesystem"
+filestore.options:
+  location: "/data/files"
+
+redis.clusters:
+  default:
+    hosts:
+      0:
+        host: "redis"
+        port: 6379
+        db: 0
+
+# The "beacon" phones home to sentry.io with install statistics. Off — the stand may well be
+# run on an air-gapped network, and a blocked outbound call only produces noise in the logs.
+beacon.anonymous: true

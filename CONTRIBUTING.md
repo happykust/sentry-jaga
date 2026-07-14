@@ -118,6 +118,75 @@ Two things about this environment are easy to get wrong:
 The same recipe runs in CI, in the `integration` job — see the note there on why it does not
 block a merge yet.
 
+## UI stand
+
+A local Sentry 26.3.1 **with its web UI**, with `sentry-jaga` installed into it. This is where
+the integration is checked by hand, in a browser.
+
+It exists because a whole layer of this project cannot be tested any other way. The install
+form, the Space → Task type → attributes cascade, the Ticket Rules modal, the task-search
+autocomplete, the settings screen — none of that is *our* rendering. We hand Sentry dictionaries
+that describe fields, and Sentry's React frontend decides what to draw from them. The unit tests
+cover the dictionaries; the Sentry-layer tests above cover the contracts (the provider registers,
+the endpoint answers, the sync fires). Neither can tell you that a field is mislabelled, that the
+cascade does not repopulate when the space changes, or that a required field renders without its
+asterisk. For that you have to look at it.
+
+**Bring it up.** The stand is a supplement to `docker-compose.test.yml`, not a replacement — it
+reuses that project's Postgres, Redis, ClickHouse and Snuba over a shared network, so that one
+comes up first.
+
+```bash
+rm -rf dist && uv build                                   # the image installs dist/*.whl
+docker compose -f docker-compose.test.yml up -d --wait    # postgres, redis, clickhouse, snuba
+docker compose -f docker-compose.ui.yml up -d --build     # web, worker, kafka, taskbroker
+
+# Migrations and a superuser. `--no-deps` because neither needs the async task path — without
+# it `run` would boot kafka + taskbroker just to have them sit idle.
+docker compose -f docker-compose.ui.yml run --rm --no-deps web upgrade --noinput
+docker compose -f docker-compose.ui.yml run --rm --no-deps web createuser \
+    --email admin@example.com --password admin --superuser --no-input
+
+# An organization, a project and one issue to file a task from. The Group is created through
+# the ORM, exactly as the integration tests do it, so the stand needs no event ingest.
+docker cp scripts/seed_ui_stand.py sentry-jaga-web:/seed.py
+docker compose -f docker-compose.ui.yml exec -T web sentry exec /seed.py
+```
+
+Then <http://localhost:9000>, `admin@example.com` / `admin`. Worth a look:
+
+- **Settings → Integrations** — the catalogue entry, and the install form behind it (the cascade
+  lives here).
+- **The issue page** the seed script prints a link to — *Link Jaga Task* and *Create Jaga Task*,
+  which is where the search autocomplete and the field cascade actually get exercised.
+- **Alerts → Create Alert Rule** — the Ticket Rules action, which renders the same create form
+  with no issue behind it.
+
+**The trap that will cost you an hour.** The image installs a *built wheel*, so editing the
+source changes nothing until you rebuild both it and the image:
+
+```bash
+rm -rf dist && uv build
+docker compose -f docker-compose.ui.yml build --no-cache web
+docker compose -f docker-compose.ui.yml up -d web worker
+```
+
+`rm -rf dist` is not decoration: `uv build` does not clean the directory, the Dockerfile globs
+`dist/*.whl`, and two versions sitting there make the build fail with `ResolutionImpossible`.
+
+**Tear it down** in this order — the network belongs to the test project, so the UI project has
+to let go of it first:
+
+```bash
+docker compose -f docker-compose.ui.yml down -v
+docker compose -f docker-compose.test.yml down -v
+```
+
+**This is a local stand and nothing else.** The secret key is a fixed throwaway value committed
+in plain text in `docker/sentry/config.yml`, the superuser's password is `admin`, mail goes
+nowhere and every port is published on `127.0.0.1` only. It is not hardened, it is not meant to
+be, and none of it may be reused anywhere real.
+
 ## Style
 
 ```bash

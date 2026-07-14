@@ -1,0 +1,134 @@
+# A local Sentry 26.3.1 WITH THE WEB UI and sentry-jaga installed into it — for checking the
+# integration by hand in a browser (the create-task form, the Space -> Task type -> attributes
+# cascade), which no test covers.
+#
+# This file is a SUPPLEMENT to docker-compose.test.yml, not a replacement: Postgres, Redis,
+# ClickHouse and Snuba are taken from there and reused as-is. Bring that one up first.
+#
+#   uv build                                             # the image installs dist/*.whl
+#   docker compose -f docker-compose.test.yml up -d      # postgres, redis, clickhouse, snuba
+#   docker compose -f docker-compose.ui.yml up -d --build
+#
+# Then migrations and a superuser (`--no-deps`: neither needs the async task path, and without
+# it `run` would boot kafka + taskbroker just to sit idle):
+#
+#   docker compose -f docker-compose.ui.yml run --rm --no-deps web upgrade --noinput
+#   docker compose -f docker-compose.ui.yml run --rm --no-deps web createuser \
+#       --email admin@example.com --password admin --superuser --no-input
+#
+# The full recipe, the seed script and the stale-wheel trap are in CONTRIBUTING.md ("UI stand").
+#
+# Teardown, in this order — the network belongs to the test project, so the UI project has to
+# let go of it first:
+#
+#   docker compose -f docker-compose.ui.yml down -v
+#   docker compose -f docker-compose.test.yml down -v
+#
+# NOT PRODUCTION. Fixed secret key, a superuser with a known password, everything published on
+# 127.0.0.1 only.
+
+name: sentry-jaga-ui
+
+# The network of the docker-compose.test.yml project, where postgres/redis/snuba answer to
+# exactly those DNS names. `external: true` = "it already exists, do not create it" — so this
+# project can be torn down without touching the test containers.
+networks:
+  default:
+    name: sentry-jaga_default
+    external: true
+
+x-sentry: &sentry
+  build:
+    context: .
+    dockerfile: docker/sentry-ui.Dockerfile
+  image: sentry-jaga/sentry-ui:26.3.1
+  environment:
+    SENTRY_CONF: /etc/sentry
+    # `sentry.conf.py` reads nothing from the environment (everything is spelled out in the
+    # file), but Sentry itself still checks this one on boot.
+    SENTRY_SECRET_KEY: "local-ui-stand-not-a-secret-0123456789abcdef"
+  volumes:
+    - ./docker/sentry:/etc/sentry:ro
+    - sentry-data:/data
+  depends_on:
+    taskbroker:
+      condition: service_started
+
+services:
+  # --- Kafka + taskbroker: THE ASYNC TASK PATH. Not optional. ---
+  #
+  # Sentry 26.3 HAS NO CELERY — the package is not installed at all, and `sentry run worker` is
+  # a stub that prints "The worker command has been removed. Use `sentry run taskworker`" in a
+  # loop. Tasks now go: web produces to a Kafka topic -> `taskbroker` consumes it into a local
+  # SQLite queue and hands tasks out over gRPC -> `sentry run taskworker` executes them.
+  #
+  # That is why this stand needs Kafka, while docker-compose.test.yml does not: the tests call
+  # the integration's methods directly, whereas a live UI enqueues real tasks (the outbound
+  # status sync of this integration among them).
+  #
+  # One node, KRaft (no ZooKeeper), one partition, no replication.
+  kafka:
+    image: apache/kafka:3.9.0
+    container_name: sentry-jaga-kafka
+    environment:
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: "broker,controller"
+      KAFKA_LISTENERS: "PLAINTEXT://:9092,CONTROLLER://:9093"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092"
+      KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
+      KAFKA_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:9093"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      CLUSTER_ID: "5L6g3nShT-eMCtK--X86sw"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+
+  taskbroker:
+    image: ghcr.io/getsentry/taskbroker:latest
+    container_name: sentry-jaga-taskbroker
+    depends_on:
+      kafka: { condition: service_healthy }
+    environment:
+      TASKBROKER_KAFKA_CLUSTER: "kafka:9092"
+      # In monolith mode `DefaultRouter` routes EVERY task namespace to the single `taskworker`
+      # topic (sentry/taskworker/router.py), so one broker on one topic covers the whole stand.
+      TASKBROKER_KAFKA_TOPIC: "taskworker"
+      TASKBROKER_KAFKA_CONSUMER_GROUP: "taskbroker"
+      TASKBROKER_KAFKA_AUTO_OFFSET_RESET: "latest"
+      TASKBROKER_GRPC_PORT: "50051"
+      TASKBROKER_DB_PATH: "/opt/sqlite/taskbroker.sqlite"
+      TASKBROKER_CREATE_MISSING_TOPICS: "true"
+      TASKBROKER_DEFAULT_TOPIC_PARTITIONS: "1"
+      TASKBROKER_LOG_LEVEL: "info"
+
+  # --- Sentry itself ---
+  web:
+    <<: *sentry
+    container_name: sentry-jaga-web
+    command: ["run", "web"]
+    ports:
+      - "127.0.0.1:9000:9000"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:9000/_health/', timeout=5).status==200 else 1)\""]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 60s
+
+  # The worker. Mandatory: the outbound status sync of the integration (sentry_jaga/sync.py)
+  # runs as an async task, and without a worker it would sit in the queue forever.
+  worker:
+    <<: *sentry
+    container_name: sentry-jaga-worker
+    command: ["run", "taskworker", "--rpc-host", "taskbroker:50051", "--concurrency", "2"]
+
+volumes:
+  sentry-data:
