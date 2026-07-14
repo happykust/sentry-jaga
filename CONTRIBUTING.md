@@ -127,8 +127,8 @@ Two things about this environment are easy to get wrong:
   turns it on per-test with `override_settings`. That is deliberate: it lets the same file assert
   the autocomplete *and* the fallback that must survive without the setting.
 
-The same recipe runs in CI, in the `integration` job — see the note there on why it does not
-block a merge yet.
+The same recipe runs in CI, in the `integration` job, and it blocks a merge like every other
+check.
 
 ## UI stand
 

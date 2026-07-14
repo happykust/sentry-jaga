@@ -60,18 +60,15 @@ jobs:
         run: uv run mypy --follow-imports=silent
 
   integration:
-    name: Sentry layer tests (non-blocking)
+    name: Sentry layer tests
     runs-on: ubuntu-latest
     # Sentry cannot be installed as a package (not on PyPI above 23.7.1; its source tree has no
     # [build-system] and `version = "0.0.0"`), so these tests run inside Sentry's *own*
     # environment: a checkout of the tag, its lock installed by hand, its pytest pointed at our
     # test directory. The whole recipe is written up in CONTRIBUTING.md.
     #
-    # NON-BLOCKING ON PURPOSE: the recipe is verified locally (68/68 green against a real Sentry
-    # 26.3.1), but it has never yet run on a GitHub runner — a fresh runner may trip over the
-    # install or the containers. Remove `continue-on-error` as soon as this job has gone green
-    # here once. The gates that do block a merge are lint, unit and typecheck-sentry.
-    continue-on-error: true
+    # This job was `continue-on-error` until it had gone green on a runner once. It has (68/68,
+    # against a real Sentry 26.3.1), so it now blocks a merge like the rest of them.
     env:
       SENTRY_SRC: ${{ github.workspace }}/.sentry-src
     steps:
