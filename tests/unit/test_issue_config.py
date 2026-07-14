@@ -20,6 +20,7 @@ from sentry_jaga.issue_config import (
     CATEGORY_IN_PROGRESS,
     CATEGORY_TODO,
     MIN_QUERY_LENGTH,
+    PERSISTED_FIELDS,
     NoProjectsError,
     apply_status_sync,
     build_create_config,
@@ -826,3 +827,88 @@ def test_apply_status_sync_honours_a_category_the_admin_chose() -> None:
     _sync(client, resolved_category=CATEGORY_IN_PROGRESS, post_comment=False)
 
     assert client.transitions == [(TASK_ID, IN_PROGRESS_STATUS.id)]
+
+
+# --- remembering the last space and task type (`defaults`) ---------------------------------
+#
+# Sentry stores the last used values itself; reading them back is ours to do. The point of these
+# tests is that a remembered value is a *starting* point and never an authority: it goes through
+# the same `_selected_id` validation as anything else, because between the last create and this
+# render the space may have been archived or the service account may have lost access to it.
+
+
+def _two_spaces() -> FakeClient:
+    return FakeClient(
+        projects=[Project(1, "Platform", "PLT"), Project(2, "Billing", "BIL")],
+        task_types_by_project={
+            1: [TaskType(10, "Bug"), TaskType(11, "Task")],
+            2: [TaskType(20, "Incident"), TaskType(21, "Request")],
+        },
+    )
+
+
+def test_create_config_starts_from_the_remembered_space_and_type() -> None:
+    """The feature: a team that always files into Billing/Incident should not have to say so
+    twice. With no params (a freshly opened form), the remembered pair is what renders."""
+    fields = build_create_config(
+        _two_spaces(), {}, "t", "d", defaults={"project": "2", "issue_type": "21"}
+    )
+    by_name = _by_name(fields)
+
+    assert by_name["project"]["default"] == "2"
+    assert by_name["issue_type"]["default"] == "21"
+
+
+def test_the_live_form_beats_the_remembered_choice() -> None:
+    """The user is switching the space right now. Whatever they filed into last week is history —
+    otherwise the select would snap back under their fingers."""
+    fields = build_create_config(
+        _two_spaces(), {"project": "1"}, "t", "d", defaults={"project": "2", "issue_type": "21"}
+    )
+    by_name = _by_name(fields)
+
+    assert by_name["project"]["default"] == "1"
+    # The remembered type belonged to space 2 and cannot survive the switch either.
+    assert by_name["issue_type"]["default"] == "10"
+
+
+def test_a_blank_param_does_not_wipe_the_remembered_choice() -> None:
+    """An unset select serialises to "", and "" is not a choice — it is the absence of one.
+    Letting it through would put the form back on the first space and undo the whole feature."""
+    fields = build_create_config(
+        _two_spaces(),
+        {"project": "", "issue_type": ""},
+        "t",
+        "d",
+        defaults={"project": "2", "issue_type": "21"},
+    )
+    by_name = _by_name(fields)
+
+    assert by_name["project"]["default"] == "2"
+    assert by_name["issue_type"]["default"] == "21"
+
+
+def test_a_remembered_space_that_is_gone_falls_back_instead_of_breaking() -> None:
+    """The case the persistence makes newly possible: the space was remembered months ago and the
+    service account has since lost access to it, so Jaga no longer lists it. The form must open on
+    a space that exists — not raise, and above all not render a space the user cannot submit to."""
+    client = _two_spaces()
+
+    fields = build_create_config(
+        client, {}, "t", "d", defaults={"project": "999", "issue_type": "888"}
+    )
+    by_name = _by_name(fields)
+
+    assert by_name["project"]["default"] == "1"
+    assert by_name["issue_type"]["default"] == "10"
+    # And the attributes were fetched for the space that actually rendered, not the ghost one.
+    assert client.attributes_requested == [(1, 10)]
+
+
+def test_persisted_field_names_are_the_names_the_form_actually_emits() -> None:
+    """`PERSISTED_FIELDS` is the contract with Sentry: it filters the submitted form data by
+    these names. A field renamed in `build_create_config` without renaming it here would store
+    nothing, and the form would silently stop remembering anything."""
+    names = {field["name"] for field in build_create_config(FakeClient(), {}, "t", "d")}
+
+    assert set(PERSISTED_FIELDS) <= names

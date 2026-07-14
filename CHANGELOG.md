@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   status id cannot be mapped directly.
 - Organization settings for the sync: the categories to move the task to when an issue is
   resolved and when it regresses, and whether to comment in addition to moving.
+- **The create form remembers the space and task type** last filed into, per Sentry project, so
+  a team that always files into one space no longer starts from the first space in the list
+  every time. A remembered space that Jaga no longer offers the service account — archived, or
+  access revoked — falls back to the first available one instead of breaking the form.
 
 ### Changed
 

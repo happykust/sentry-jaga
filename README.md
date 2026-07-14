@@ -17,6 +17,9 @@ status you configured (and, optionally, comments on it).
   task type. Jaga uses an EAV model — the set of fields depends on the pair
   "space + task type" — so the create form is built dynamically and redrawn as you pick a
   space and a type.
+
+  The space and task type you last filed into are **remembered per Sentry project**, so a team
+  that always files into one space does not have to pick it again every time.
 - **Link an existing Jaga task** to a Sentry issue by task code, with search by title and
   code.
 - **Status sync.** Resolving a Sentry issue **moves the linked task** to the status you chose

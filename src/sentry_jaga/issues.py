@@ -61,10 +61,27 @@ class JagaIssuesMixin(IssueBasicIntegration):
         return str(data["key"])
 
     def get_persisted_default_config_fields(self) -> Sequence[str]:
-        # Abstract method of `IssueBasicIntegration`: without it the class stays abstract
-        # and Sentry cannot create an installation. We do not persist form values — the
-        # create cascade (`build_create_config`) does not read `get_defaults`.
-        return []
+        """The create-form fields whose last used value is remembered, per Sentry project.
+
+        Sentry stores them for us: `store_issue_last_defaults` is called by the
+        create *and* the link endpoint with the submitted form data, and keeps whatever is
+        named here in `org_integration.config["project_issue_defaults"][<project id>]`.
+
+        Reading them back, however, is NOT automatic — whatever
+        `store_issue_last_defaults`' docstring says about the values being "merged into the
+        field configuration objects" when the integration is serialized. Nothing merges them:
+        in Sentry 26.3.1 `get_defaults` has exactly one caller in the whole tree, and it is
+        Jira Server's own `get_create_issue_config`. So `get_create_issue_config` below calls
+        it too, and passes the result into the core.
+        """
+        return list(issue_config.PERSISTED_FIELDS)
+
+    # `get_persisted_user_default_config_fields` is deliberately NOT overridden. It exists for
+    # fields that are personal rather than shared — Jira Server persists `reporter` there, so
+    # that a ticket you file is filed as *you* even though your teammate's default is himself.
+    # Our create form has no such field: space, task type and the task-type attributes are all
+    # properties of the task, and a team wants them to agree, not to differ per member. Storing
+    # them per user would also cost a `UserOption` read on every render of the form for nothing.
 
     # `get_group_title` / `get_group_description` are overridden rather than merely used to
     # pre-fill the form: the alert-rule ticket action calls them directly on the installation
@@ -99,9 +116,25 @@ class JagaIssuesMixin(IssueBasicIntegration):
         self, group: Group | None, user: Any, **kwargs: Any
     ) -> list[dict[str, Any]]:
         title, description = self._defaults_from_group(group)
+        # The space and the task type this Sentry project last filed into (see
+        # `get_persisted_default_config_fields`). Without a group there is no project to look
+        # them up by — the alert-rule ticket action renders the form that way.
+        #
+        # The ignore is for the run against the Sentry sources, where `get_defaults` is
+        # unannotated and strict mode forbids calling it (cf. `get_group_body` above; this
+        # module opts out of `warn_unused_ignores` for exactly that reason).
+        defaults: dict[str, Any] = (
+            self.get_defaults(group.project, user)  # type: ignore[no-untyped-call]
+            if group is not None
+            else {}
+        )
         with _as_integration_error():
             return issue_config.build_create_config(
-                self.get_client(), kwargs.get("params") or {}, title, description
+                self.get_client(),
+                kwargs.get("params") or {},
+                title,
+                description,
+                defaults=defaults,
             )
 
     def create_issue(self, data: dict[str, Any], **kwargs: Any) -> dict[str, Any]:

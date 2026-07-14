@@ -266,3 +266,101 @@ class JagaIssuesTest(APITestCase):
 
     def test_issue_url(self) -> None:
         assert self.installation.get_issue_url("PLT-500") == f"{BASE}/browse/PLT-500"
+
+    # --- remembering the last space and task type ------------------------------------------
+    #
+    # This is the half of the feature that only a real Sentry can prove: `store_issue_last_defaults`
+    # is Sentry's, it writes to `OrganizationIntegration.config` through a control-silo RPC, and
+    # `get_defaults` reads it back. The unit tests cover what the core does with the values; these
+    # cover that the values make the round trip at all.
+
+    @staticmethod
+    def _mock_two_spaces() -> None:
+        responses.add(responses.POST, f"{API}/v1/auth/login", json=AUTH_OK, status=200)
+        responses.add(
+            responses.GET,
+            f"{API}/v1/project/list/my",
+            json={
+                "content": [
+                    {"id": 1, "title": "Platform", "code": "PLT"},
+                    {"id": 2, "title": "Billing", "code": "BIL"},
+                ],
+                "totalPages": 1,
+                "pageNumber": 0,
+                "totalElements": 2,
+            },
+            status=200,
+        )
+        responses.add(
+            responses.GET, f"{API}/v1/project/1/taskType", json=[{"id": 10, "typeName": "Bug"}]
+        )
+        responses.add(
+            responses.GET, f"{API}/v1/project/2/taskType", json=[{"id": 20, "typeName": "Incident"}]
+        )
+        for project_id, type_id in ((1, 10), (2, 20)):
+            responses.add(
+                responses.GET,
+                f"{API}/v1/project/{project_id}/taskType/{type_id}",
+                json={"id": type_id, "typeName": "Bug", "modulesEnabled": [], "groups": []},
+            )
+
+    def test_persisted_fields_are_the_cascade_fields(self) -> None:
+        assert list(self.installation.get_persisted_default_config_fields()) == [
+            "project",
+            "issue_type",
+        ]
+        # No per-user defaults: every field of our create form describes the task, not the person
+        # filing it, so a team wants them to agree rather than to differ per member.
+        assert list(self.installation.get_persisted_user_default_config_fields()) == []
+
+    @responses.activate
+    def test_the_create_form_reopens_on_the_space_last_filed_into(self) -> None:
+        """The feature, end to end through Sentry's own persistence: a team that filed its last
+        task into Billing/Incident gets Billing/Incident again — not the first space in the list."""
+        self._mock_two_spaces()
+
+        self.installation.store_issue_last_defaults(
+            self.project,
+            self.user,
+            {"project": "2", "issue_type": "20", "title": "Login is broken"},
+        )
+        config = self.installation.get_create_issue_config(self.group, self.user)
+        by_name = {field["name"]: field for field in config}
+
+        assert by_name["project"]["default"] == "2"
+        assert by_name["issue_type"]["default"] == "20"
+
+    @responses.activate
+    def test_only_the_persisted_fields_are_stored(self) -> None:
+        """`store_issue_last_defaults` filters the submitted form by
+        `get_persisted_default_config_fields`. The task title of the last issue must not be
+        remembered — it belongs to that issue, not to the project."""
+        self._mock_two_spaces()
+
+        self.installation.store_issue_last_defaults(
+            self.project,
+            self.user,
+            {"project": "2", "issue_type": "20", "title": "Login is broken"},
+        )
+
+        stored = self.installation.org_integration.config["project_issue_defaults"][
+            str(self.project.id)
+        ]
+        assert stored == {"project": "2", "issue_type": "20"}
+
+    @responses.activate
+    def test_a_remembered_space_the_account_lost_access_to_does_not_break_the_form(self) -> None:
+        """The failure the persistence makes possible: the remembered space is no longer among
+        the ones Jaga offers this service account. The form must still open, on a space that
+        exists — and it must not ask Jaga about the space that is gone."""
+        self._mock_two_spaces()
+
+        self.installation.store_issue_last_defaults(
+            self.project, self.user, {"project": "999", "issue_type": "888"}
+        )
+        config = self.installation.get_create_issue_config(self.group, self.user)
+        by_name = {field["name"]: field for field in config}
+
+        assert by_name["project"]["default"] == "1"
+        assert by_name["issue_type"]["default"] == "10"
+        assert not [c for c in responses.calls if "/v1/project/999/" in c.request.url]

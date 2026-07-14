@@ -52,6 +52,11 @@ CATEGORY_TODO = "status.category.todo"
 CATEGORY_IN_PROGRESS = "status.category.inprogress"
 CATEGORY_DONE = "status.category.done"
 
+# The create-form fields whose last used value is remembered per Sentry project. Sentry stores
+# them itself (`IssueBasicIntegration.store_issue_last_defaults`), keyed by the names below —
+# which is why they must stay in step with the field names `build_create_config` emits.
+PERSISTED_FIELDS = ("project", "issue_type")
+
 
 class NoProjectsError(JagaError):
     """The service account has no spaces available in Jaga."""
@@ -78,6 +83,24 @@ def _selected_id(params: dict[str, Any], key: str, available: list[int]) -> int:
     except (TypeError, ValueError):  # key absent (None), empty, or not a number
         return available[0]
     return candidate if candidate in available else available[0]
+
+
+def _with_defaults(params: dict[str, Any], defaults: dict[str, Any] | None) -> dict[str, Any]:
+    """The form selection to render: what the user is doing now, over what they did last time.
+
+    `defaults` are the values Sentry remembered from this project's last create (see
+    `PERSISTED_FIELDS`); `params` is the live state of the form. `params` must win — with
+    `updatesForm` the frontend resends every field on every keystroke, so the moment the user
+    touches the space select, `params` carries their choice and the remembered one is history.
+
+    Empty values in `params` are dropped rather than allowed to win. On the first render the
+    frontend sends no space at all, but a blank is also what an unset select serialises to, and
+    a blank taken at face value would silently throw the remembered choice away — reinstating
+    the very bug this is here to fix.
+    """
+    merged = dict(defaults or {})
+    merged.update({key: value for key, value in params.items() if value not in (None, "")})
+    return merged
 
 
 def _require_projects(client: JagaClient) -> list[Project]:
@@ -135,11 +158,23 @@ def _project_field(projects: list[Project], project_id: int) -> dict[str, Any]:
 
 
 def build_create_config(
-    client: JagaClient, params: dict[str, Any], title: str, description: str
+    client: JagaClient,
+    params: dict[str, Any],
+    title: str,
+    description: str,
+    defaults: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    """The create-form cascade: space -> task type -> dynamic attributes."""
+    """The create-form cascade: space -> task type -> dynamic attributes.
+
+    `defaults` carries the space and the task type this Sentry project last created a task with,
+    so that a team that always files into one space does not have to re-pick it every time. They
+    are only a starting point: `_selected_id` still validates them against what Jaga offers
+    *now*, so a remembered space the service account has since lost access to falls back to the
+    first available one instead of rendering a form that cannot be submitted.
+    """
+    selection = _with_defaults(params, defaults)
     projects = _require_projects(client)
-    project_id = _selected_id(params, "project", [p.id for p in projects])
+    project_id = _selected_id(selection, "project", [p.id for p in projects])
     fields: list[dict[str, Any]] = [_project_field(projects, project_id)]
 
     task_types = client.get_task_types(project_id)
@@ -147,7 +182,7 @@ def build_create_config(
         return fields
 
     # Types are validated against the list of the CURRENT space: see `_selected_id`.
-    type_id = _selected_id(params, "issue_type", [t.id for t in task_types])
+    type_id = _selected_id(selection, "issue_type", [t.id for t in task_types])
     fields.append(
         {
             "name": "issue_type",
