@@ -6,7 +6,11 @@ import logging
 from collections.abc import Mapping, Sequence
 from typing import Any, ClassVar
 
-from sentry.integrations.mixins.issues import IssueSyncIntegration, ResolveSyncAction
+from sentry.integrations.mixins.issues import (
+    IntegrationSyncTargetNotFound,
+    IssueSyncIntegration,
+    ResolveSyncAction,
+)
 from sentry.integrations.models.external_issue import ExternalIssue
 from sentry.users.services.user import RpcUser
 from sentry.users.services.user.service import user_service
@@ -157,9 +161,8 @@ class JagaSyncMixin(JagaIssuesMixin, IssueSyncIntegration):
                     "Put the Sentry issue's assignee on the linked Jaga task, and take them off "
                     "it again when the issue is unassigned. The two are matched by email address; "
                     "a Sentry user with no Jaga account is skipped, and the task keeps whoever it "
-                    "had. Assigning a Sentry issue to a team clears the Jaga assignee, because a "
-                    "task is assigned to people. Off by default: this names a real person in "
-                    "another system and notifies them."
+                    "had. Assigning an issue to a Sentry team changes nothing in Jaga. Off by "
+                    "default: this names a real person in another system and notifies them."
                 ),
                 "default": self.SYNC_DEFAULTS["outbound_assignee"],
             },
@@ -254,6 +257,27 @@ class JagaSyncMixin(JagaIssuesMixin, IssueSyncIntegration):
                 content,
             )
 
+    @staticmethod
+    def _addresses_of(user: RpcUser) -> list[str]:
+        """Every address this Sentry user might be known by in Jaga, best first.
+
+        `RpcUser.emails` is NOT "the user's email addresses" — it is the *verified* ones only
+        (`sentry/users/services/user/serial.py`: `[e for e in useremails if e["is_verified"]]`),
+        and `UserEmail.is_verified` defaults to False. On a self-hosted Sentry with no working
+        SMTP, nobody ever confirms an address, so that set is empty for EVERY user. Relying on it
+        alone would mean the assignee sync never matched anyone on exactly the deployments this
+        integration is built for. So the primary address (`user.email`) leads, and the verified
+        ones follow.
+
+        `emails` is a frozenset, and iterating one is ordered by string hash — which Python
+        randomises per process. Left unsorted, a user with two addresses that resolve to two
+        different Jaga profiles would land on a different executor depending on which worker ran
+        the task. Sorting makes the choice boring and repeatable.
+        """
+        addresses = [user.email] if user.email else []
+        addresses += sorted(user.emails)
+        return list(dict.fromkeys(a for a in addresses if a))
+
     def sync_assignee_outbound(
         self,
         external_issue: ExternalIssue,
@@ -263,37 +287,44 @@ class JagaSyncMixin(JagaIssuesMixin, IssueSyncIntegration):
     ) -> None:
         """Put the Sentry issue's assignee on the Jaga task, or take them off it.
 
-        `user` is None when the issue was assigned to a TEAM, not to a person — Sentry's own sync
-        task passes it that way. A Jaga task is assigned to people, so a team assignment clears
-        the field rather than guessing which member of it to name.
+        `user is None` means unassign — that is Sentry's own reading of it, in as many words:
+        `sentry/integrations/tasks/sync_assignee_outbound.py` resolves the user with
+        `user_service.get_user(user_id) if user_id else None` under the comment "Assume unassign
+        if None". (Assigning a Sentry issue to a *team* does not reach here at all: the outbound
+        sync is only queued when `assignee_type == "user"` — `models/groupassignee.py`.)
 
-        Matching is by email, and every address the Sentry user has is tried: Sentry allows more
-        than one, and which of them Jaga knows the person by is not knowable in advance. A user
-        Jaga has never heard of is NOT an error — it is the normal case for anyone who works in
-        Sentry but not in Jaga — so the task simply keeps whoever it had.
+        Matching is by email; see `_addresses_of` for which addresses, and in what order.
 
-        Failures are swallowed, as in `sync_status_outbound`: Jaga being unreachable must not
-        stop someone being assigned an issue in Sentry.
+        A user Jaga has never heard of raises `IntegrationSyncTargetNotFound`, which Sentry's task
+        catches and records as a halt. It must NOT fall through to the unassign branch: that would
+        take a real person off a real task because Sentry could not find their counterpart — the
+        loudest possible way to lose data over a lookup miss.
+
+        Jaga being down propagates as an `IntegrationError`. Unlike `sync_status_outbound`, this
+        is NOT swallowed: the task retries five times, and swallowing would throw the retry away
+        AND record the assignment as a success that never happened.
         """
-        emails = list(user.emails) if user is not None else []
-        try:
-            result = issue_config.apply_assignee_sync(
-                self.get_client(),
-                external_issue.key,
-                emails,
-                # No user means a team, which is nobody in Jaga's terms: an unassignment.
-                assign=assign and bool(emails),
-            )
-            logger.info(
-                "jaga.sync.assignee_outbound",
-                extra={"key": external_issue.key, "result": result},
-            )
-        except JagaError:
-            logger.warning(
-                "jaga.sync.assignee_outbound_failed",
-                extra={"key": external_issue.key},
-                exc_info=True,
-            )
+        if user is not None and assign:
+            addresses = self._addresses_of(user)
+            with as_integration_error():
+                result = issue_config.apply_assignee_sync(
+                    self.get_client(), external_issue.key, addresses, assign=True
+                )
+            if result == issue_config.ASSIGNEE_NOT_FOUND:
+                logger.info(
+                    "jaga.sync.assignee_not_in_jaga",
+                    extra={"key": external_issue.key, "address_count": len(addresses)},
+                )
+                raise IntegrationSyncTargetNotFound("No Jaga user matches the Sentry assignee.")
+        else:
+            with as_integration_error():
+                result = issue_config.apply_assignee_sync(
+                    self.get_client(), external_issue.key, [], assign=False
+                )
+
+        logger.info(
+            "jaga.sync.assignee_outbound", extra={"key": external_issue.key, "result": result}
+        )
 
     def get_resolve_sync_action(self, data: Mapping[str, Any]) -> ResolveSyncAction:
         # Inbound Jaga -> Sentry webhooks are not supported in this version.

@@ -519,7 +519,7 @@ def test_find_person_by_email_treats_400_as_not_found(client: JagaClient) -> Non
 
 @responses.activate
 def test_find_person_by_email_still_raises_on_a_real_failure(client: JagaClient) -> None:
-    """Only 400/404 mean "not found". A 500 is Jaga breaking, and must not be read as "nobody"."""
+    """A 500 is Jaga breaking, and must not be read as "nobody"."""
     _mock_login()
     responses.add(
         responses.POST, f"{API}/v1/team/userProfile/findByMailOrName", json={}, status=500
@@ -527,6 +527,49 @@ def test_find_person_by_email_still_raises_on_a_real_failure(client: JagaClient)
 
     with pytest.raises(JagaError):
         client.find_person_by_email("x@e.com")
+
+
+@responses.activate
+def test_find_person_by_email_raises_on_a_400_that_does_not_say_not_found(
+    client: JagaClient,
+) -> None:
+    """THE important one. Jaga says "no such user" with a 400, so it is tempting to read every 400
+    as "nobody" — and that would swallow our OWN bugs: a renamed field, a moved route, a WAF in
+    front of the API. Each would come back as a confident, hour-long cached "that person does not
+    exist" about somebody who is standing right there in the dropdown. An unexplained 400 must be
+    heard."""
+    _mock_login()
+    responses.add(
+        responses.POST,
+        f"{API}/v1/team/userProfile/findByMailOrName",
+        json={"error": "Required request parameter 'searchText' is not present"},
+        status=400,
+    )
+
+    with pytest.raises(JagaError):
+        client.find_person_by_email("ivanov@example.com")
+
+
+@responses.activate
+def test_find_person_by_email_refuses_a_person_it_did_not_ask_for(client: JagaClient) -> None:
+    """The endpoint is find-by-mail-OR-NAME, and nothing in its contract promises an exact match.
+    A fuzzy hit would hand back a different human — whom we would then put on a real task, with
+    total confidence and no way to notice."""
+    _mock_login()
+    responses.add(
+        responses.POST,
+        f"{API}/v1/team/userProfile/findByMailOrName",
+        json={
+            "coreId": 1,
+            "teamId": 2,
+            "uuid": "uuid-of-someone-else",
+            "mail": "ivanova@example.com",
+            "fullName": "Ivanova Irina",
+        },
+        status=200,
+    )
+
+    assert client.find_person_by_email("ivanov@example.com") is None
 
 
 @responses.activate
@@ -550,10 +593,17 @@ def test_find_person_by_email_caches_the_answer(client: JagaClient) -> None:
 
 @responses.activate
 def test_find_person_by_email_caches_a_miss_too(client: JagaClient) -> None:
-    """A Sentry user with no Jaga account must not cost a round trip on every single assignment."""
+    """A Sentry user with no Jaga account must not cost a round trip on every single assignment.
+
+    Only a miss Jaga *explained* is cached — hence the real not-found body here rather than a bare
+    400. An unexplained 400 raises and is cached as nothing; see the test above.
+    """
     _mock_login()
     responses.add(
-        responses.POST, f"{API}/v1/team/userProfile/findByMailOrName", json={}, status=400
+        responses.POST,
+        f"{API}/v1/team/userProfile/findByMailOrName",
+        json={"error": '{"exception":"...NotFoundException","message":"User does not exists"}'},
+        status=400,
     )
 
     assert client.find_person_by_email("nobody@example.com") is None
@@ -563,9 +613,16 @@ def test_find_person_by_email_caches_a_miss_too(client: JagaClient) -> None:
     assert len(lookups) == 1, "the miss must be cached, not re-asked"
 
 
+@responses.activate
 def test_find_person_by_email_does_not_call_jaga_for_a_blank_email(client: JagaClient) -> None:
-    """No HTTP mock is registered: any request at all would raise ConnectionError."""
+    """`responses` is active but NOTHING is registered, so any HTTP call at all fails the test.
+
+    The decorator is the whole point: without it `responses` does not patch `requests`, and a
+    regression here would send a real request to the configured instance — which would then fail,
+    or not, depending on DNS. That is not a test.
+    """
     assert client.find_person_by_email("   ") is None
+    assert len(responses.calls) == 0
 
 
 # --- writing the assignee --------------------------------------------------
@@ -1137,3 +1194,60 @@ def test_find_person_by_email_returns_none_when_jaga_answers_without_a_uuid(
     )
 
     assert client.find_person_by_email("a@e.com") is None
+
+
+@responses.activate
+def test_get_space_users_is_cached(client: JagaClient) -> None:
+    """The create form's space and type selects both carry `updatesForm`, so Sentry re-renders the
+    whole form — and re-runs this — every time either is touched. Uncached, each of those renders
+    would walk every page of the member list again."""
+    _mock_login()
+    responses.add(
+        responses.GET,
+        _matrix_url(1),
+        json=_matrix_page(
+            [
+                {
+                    "id": 1,
+                    "displayName": "One",
+                    "email": "one@e.com",
+                    "isGroup": False,
+                    "type": "USER",
+                }
+            ]
+        ),
+        status=200,
+    )
+
+    first = client.get_space_users(1)
+    second = client.get_space_users(1)
+
+    assert first == second == [("one@e.com", "One")]
+    matrix_calls = [c for c in responses.calls if "userRoles" in c.request.url]
+    assert len(matrix_calls) == 1, "the second render must come from the cache"
+
+
+@responses.activate
+def test_get_space_users_falls_back_when_the_matrix_is_not_even_a_page(client: JagaClient) -> None:
+    """A 200 whose body is not a page is an answer we cannot read. It must reach the fallback —
+    not escape as an `AttributeError` from `.get` and take the whole create form down with it.
+    This API has already returned shapes its own spec did not promise, five times over."""
+    _mock_login()
+    responses.add(responses.GET, _matrix_url(1), json=["not", "a", "page"], status=200)
+    responses.add(
+        responses.GET,
+        f"{API}/v1/project/getUserProfileDtos/1",
+        json=[
+            {
+                "id": 1,
+                "personUuid": "u",
+                "email": "fallback@example.com",
+                "displayName": "Fallback",
+                "canBeAssign": True,
+                "isBlocked": False,
+            }
+        ],
+        status=200,
+    )
+
+    assert client.get_space_users(1) == [("fallback@example.com", "Fallback")]

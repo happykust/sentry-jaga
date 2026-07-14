@@ -80,6 +80,14 @@ GROUP_ID_FIELD = "sentry_group_id"
 
 EVENT_ATTACHMENT_CONTENT_TYPE = "application/json"
 
+# What `apply_assignee_sync` did. `ASSIGNEE_NOT_FOUND` is the one the caller must act on: the
+# Sentry user has no counterpart in Jaga, and the task was deliberately LEFT ALONE rather than
+# cleared. The Sentry layer turns it into `IntegrationSyncTargetNotFound`.
+ASSIGNEE_ASSIGNED = "assigned"
+ASSIGNEE_UNASSIGNED = "unassigned"
+ASSIGNEE_NOT_FOUND = "no_such_user"
+ASSIGNEE_NO_ATTRIBUTE = "no_attribute"
+
 
 class NoProjectsError(JagaError):
     """The service account has no spaces available in Jaga."""
@@ -347,16 +355,28 @@ def resolve_assignee_cells(
     raw = cell["value"]
     emails = [str(item) for item in (raw if isinstance(raw, list) else [raw]) if str(item).strip()]
 
+    if not emails:
+        # Nobody was picked (a blank or whitespace-only value got this far). The cell is REMOVED
+        # rather than sent empty: an empty list is not "no opinion" to Jaga, it is the instruction
+        # to clear the assignee — and `""` with `referenceValue: true` is not a reference at all.
+        payload.remove(cell)
+        return
+
     uuids: list[str] = []
     for email in emails:
         person = client.find_person_by_email(email)
         if person is None:
+            # Loud, and named. In the interactive form Sentry shows this to whoever picked them.
+            # When an alert rule replays a form whose assignee has since left Jaga, nobody sees
+            # the error — so the log line is the only thing that will explain why that rule
+            # stopped filing tasks. See "Limitations" in the README.
+            logger.warning("jaga.issue.assignee_not_in_jaga", extra={"email": email})
             raise JagaError(f"Jaga has no user with the email {email}.")
         uuids.append(person.uuid)
 
     # The attribute is `multiple` on every task type seen so far, and Jaga takes the value as a
     # list — but `multiple` is a per-type flag, so a single-valued one is honoured too.
-    cell["value"] = uuids if attr.multiple else (uuids[0] if uuids else "")
+    cell["value"] = uuids if attr.multiple else uuids[0]
 
 
 def assignee_field_id(raw_task: dict[str, Any]) -> int | None:
@@ -391,24 +411,21 @@ def apply_assignee_sync(
     if field_id is None:
         # The type simply has no assignee attribute. Nothing is wrong, and nothing can be done.
         logger.info("jaga.sync.assignee_attribute_absent", extra={"task_code": task_code})
-        return "no_attribute"
+        return ASSIGNEE_NO_ATTRIBUTE
 
     if not assign:
         client.set_task_assignees(int(raw_task["id"]), field_id, [])
-        return "unassigned"
+        return ASSIGNEE_UNASSIGNED
 
     person = next(filter(None, (client.find_person_by_email(email) for email in emails)), None)
     if person is None:
-        # Not an error: a Sentry user is under no obligation to exist in Jaga. Raising would make
-        # Sentry retry an assignment that can never succeed; the task keeps whoever it had.
-        logger.info(
-            "jaga.sync.assignee_not_in_jaga",
-            extra={"task_code": task_code, "email_count": len(emails)},
-        )
-        return "no_such_user"
+        # Reported, NOT acted on. The caller turns this into a halt; what it must never become is
+        # an unassignment, which would take a real person off a real task merely because Sentry
+        # could not find their Jaga counterpart.
+        return ASSIGNEE_NOT_FOUND
 
     client.set_task_assignees(int(raw_task["id"]), field_id, [person.uuid])
-    return "assigned"
+    return ASSIGNEE_ASSIGNED
 
 
 def _event_attachment_name(event_id: str) -> str:

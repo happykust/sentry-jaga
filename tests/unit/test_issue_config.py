@@ -1307,3 +1307,24 @@ def test_assignee_field_id_is_read_off_the_task_itself() -> None:
     task type. Verified against a live instance (fieldId=867868 there)."""
     assert assignee_field_id(raw_task()) == 103
     assert assignee_field_id(raw_task(with_assignee=False)) is None
+
+
+def test_a_blank_assignee_value_removes_the_cell_instead_of_sending_it_empty() -> None:
+    """An empty list is NOT "no opinion" to Jaga — it is the instruction to CLEAR the assignee
+    (that is exactly how `apply_assignee_sync` unassigns). Sending it on a create would be
+    harmless today and a bug the moment this payload is reused; and `""` with
+    `referenceValue: true` is not a reference at all. The honest payload has no cell."""
+    client = FakeClient()
+    create_task_from_form(
+        client,
+        {
+            "project": "1",
+            "issue_type": "10",
+            "title": "Login is broken",
+            "attr_103": ["   "],  # a whitespace-only value survives `form_data_to_attributes`
+        },
+    )
+
+    assert client.created is not None
+    assert _cell(client.created["attributes"], 103) is None
+    assert client.people_resolved == []

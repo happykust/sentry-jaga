@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 from typing import Any
 from urllib.parse import urljoin
@@ -40,6 +41,33 @@ STATUSES_CACHE_TTL = 300
 # simply a bound on remembering someone who has been deleted from Jaga, and on the negative
 # entries: a Sentry user with no Jaga account must not cost a round trip on every assignment.
 PERSON_CACHE_TTL = 3600
+# The members of a space change when someone joins or leaves it — rare. Sixty seconds, like the
+# list of spaces: long enough to absorb the burst of re-renders the `updatesForm` cascade causes,
+# short enough that a new colleague appears in the dropdown without anyone restarting anything.
+MEMBERS_CACHE_TTL = 60
+
+
+# Jaga reports "no such user" as a 400 with a `NotFoundException` inside it, so the status code
+# alone cannot be trusted to mean it. These are the markers of a genuine not-found, matched against
+# the whole body: the exception class name Jaga names, and the message it writes. Anything else
+# with a 400 is a bug on our side or a broken deployment, and has to be heard, not cached away.
+NOT_FOUND_MARKERS = ("notfoundexception", "does not exist")
+
+
+def _looks_like_not_found(exc: JagaApiError) -> bool:
+    """Does this error actually say "no such object" — or is it merely a 400 we do not understand?
+
+    A 404 is taken at its word. A 400 has to prove itself: on this very API a 404 has already
+    turned out to mean "Spring has no handler for that route" (`/v1/taskRole/.../executor`), and a
+    400 is also the generic validation error. Reading the body is the only way to tell a person
+    Jaga has never heard of from a request Jaga could not parse.
+    """
+    if exc.status_code == 404:
+        return True
+    if exc.status_code != 400:
+        return False
+    haystack = f"{exc} {json.dumps(exc.body, ensure_ascii=False)}".lower()
+    return any(marker in haystack for marker in NOT_FOUND_MARKERS)
 
 
 class JagaClient:
@@ -65,6 +93,7 @@ class JagaClient:
         self._projects_cache_key = f"{prefix}:projects"
         self._statuses_cache_prefix = f"{prefix}:statuses"
         self._person_cache_prefix = f"{prefix}:person"
+        self._members_cache_prefix = f"{prefix}:members"
         self._tokens = TokenManager(
             login=self.login,
             refresh=self.refresh,
@@ -192,11 +221,21 @@ class JagaClient:
 
         Members with no email are dropped: they cannot be resolved later, so offering them would
         only build a form whose submit fails.
+
+        Cached, like the spaces and the statuses are, and for the same reason: the create form's
+        space and type selects both carry `updatesForm`, so Sentry re-renders the whole form —
+        and re-runs this — every time either is touched. Uncached, that would be a fresh walk of
+        every page of the member list on each of those renders.
         """
-        members = self._space_members(space_id)
+        cache_key = f"{self._members_cache_prefix}:{space_id}"
+        cached = self._cache.get(cache_key)
+        if cached is None:
+            cached = {"members": self._space_members(space_id)}
+            self._cache.set(cache_key, cached, timeout=MEMBERS_CACHE_TTL)
+
         return [
             (str(m["email"]), str(m.get("displayName") or m["email"]))
-            for m in members
+            for m in cached.get("members", [])
             if m.get("email")
         ]
 
@@ -253,6 +292,15 @@ class JagaClient:
                 f"/v1/team/userRoles/applications/{APPLICATION_MNEMO}/projects/{space_id}",
                 params={"page": page, "size": DEFAULT_PAGE_SIZE},
             )
+            # A page is a dict, and an answer that is not one is an answer we cannot read. Raising
+            # a `JagaApiError` — rather than letting `.get` blow up with an `AttributeError` — is
+            # what lets `_space_members` catch it and fall back; an AttributeError would sail past
+            # its `except` and take the whole create form down with it. This API has already
+            # returned shapes its own spec did not promise, five times over.
+            if not isinstance(payload, dict):
+                raise JagaApiError(
+                    200, f"the member list of space {space_id} is not a page", body=payload
+                )
             for row in payload.get("content", []):
                 for entry in row.get("usersRoles", []):
                     user = entry.get("user") or {}
@@ -271,15 +319,20 @@ class JagaClient:
         return list(by_email.values())
 
     def find_person_by_email(self, email: str) -> Person | None:
-        """The one door to a person's UUID. Returns None when Jaga knows no such email.
+        """The one door to a person's UUID. Returns None only when Jaga *says* it knows no such
+        email — and raises on everything else.
 
-        Jaga answers an unknown email with HTTP 400 (`NotFoundException`, "User with email ...
-        does not exists") — a 400 that means "not found", not "bad request". Both 400 and 404 are
-        therefore a normal, expected outcome and not an error: a Sentry user simply may not exist
-        in Jaga. Every other status still raises.
+        Jaga answers an unknown email with HTTP **400**, not 404, and buries a `NotFoundException`
+        with "User with email ... does not exists" in the body. So a 400 here has to be read, not
+        assumed: a blanket "400 means nobody" would swallow OUR OWN bugs — a renamed field, a
+        moved route, a WAF in front of the API — and turn them into a confident, hour-long cached
+        "that person does not exist", about people who are standing right there in the dropdown.
+        That is the exact failure this whole change was written to kill (`_space_members`), and it
+        must not be reintroduced one layer down. `_looks_like_not_found` is what tells the two
+        apart, and an unrecognised 400 propagates.
 
-        A person's UUID never changes, so the answer is cached for an hour. Without the cache
-        this would be one HTTP call per assignee sync and per task create.
+        A person's UUID never changes, so the answer is cached for an hour — the miss too, so that
+        a Sentry user with no Jaga account does not cost a round trip on every assignment.
         """
         address = email.strip()
         if not address:
@@ -288,8 +341,6 @@ class JagaClient:
         key = f"{self._person_cache_prefix}:{hashlib.sha256(address.lower().encode()).hexdigest()}"
         cached = self._cache.get(key)
         if cached is not None:
-            # A miss is cached too — as {} — so a Sentry user with no Jaga account does not cost
-            # a round trip on every single assignment.
             return Person.from_api(cached) if cached else None
 
         try:
@@ -297,15 +348,28 @@ class JagaClient:
                 "POST", "/v1/team/userProfile/findByMailOrName", json={"searchText": address}
             )
         except JagaApiError as exc:
-            if exc.status_code not in (400, 404):
+            if not _looks_like_not_found(exc):
                 raise
             self._cache.set(key, {}, timeout=PERSON_CACHE_TTL)
             return None
 
         if not isinstance(payload, dict) or not payload.get("uuid"):
             return None
+
+        # The endpoint is find-by-mail-OR-NAME, and we asked it by mail. Nothing in its contract
+        # promises an exact match, and a fuzzy one would hand back a different human — whom we
+        # would then assign a real task to, silently and with total confidence. A mismatch is
+        # treated as "not found", which is the safe reading of an answer we did not ask for.
+        found = Person.from_api(payload)
+        if found.email.lower() != address.lower():
+            logger.warning(
+                "jaga.client.person_email_mismatch",
+                extra={"returned": found.email, "asked_for": address},
+            )
+            return None
+
         self._cache.set(key, payload, timeout=PERSON_CACHE_TTL)
-        return Person.from_api(payload)
+        return found
 
     def set_task_assignees(self, task_id: int, field_id: int, person_uuids: list[str]) -> None:
         """Set (or clear) the people a task is assigned to.

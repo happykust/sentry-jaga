@@ -6,13 +6,16 @@ pytest.importorskip("sentry")
 
 import responses
 from django.core.cache import cache
+from sentry.integrations.mixins.issues import IntegrationSyncTargetNotFound
 from sentry.integrations.models.external_issue import ExternalIssue
 from sentry.integrations.models.organization_integration import OrganizationIntegration
 from sentry.models.activity import Activity
+from sentry.shared_integrations.exceptions import IntegrationError
 from sentry.silo.base import SiloMode
 from sentry.testutils.cases import APITestCase
 from sentry.testutils.silo import assume_test_silo_mode
 from sentry.types.activity import ActivityType
+from sentry.users.models.useremail import UserEmail
 from sentry.users.services.user.service import user_service
 
 from sentry_jaga.issue_config import (
@@ -330,21 +333,32 @@ class JagaSyncTest(APITestCase):
     def test_sync_assignee_outbound_puts_the_sentry_assignee_on_the_task(self) -> None:
         """Sentry and Jaga are matched by email; the UUID behind it is what Jaga stores.
 
-        The email asserted here is the RpcUser's own — NOT one this test planted. `RpcUser.emails`
-        is built from the `UserEmail` table, not from `User.email`, so overwriting the latter
-        would change what the assertion reads without changing what the code sends: the test
-        would go green while checking nothing.
+        The address asserted here is the RpcUser's own — NOT one this test planted. Overwriting
+        `User.email` would change what the assertion reads without changing what `RpcUser.emails`
+        (which is built from the `UserEmail` table) contains: the test would go green while
+        checking nothing.
+
+        The PRIMARY address is the one tried first, and the lookup stops there. That order is
+        deliberate: `RpcUser.emails` holds only *verified* addresses, and on a self-hosted Sentry
+        with no SMTP nobody has any.
         """
         self._mock_jaga()
-        responses.add(responses.POST, f"{API}/v1/team/userProfile/findByMailOrName", json=PERSON)
         rpc_user = user_service.get_user(user_id=self.user.id)
         assert rpc_user is not None
+        # Jaga must answer with the very address it was asked about: the client rejects a profile
+        # whose `mail` is somebody else's, because `findByMailOrName` is a fuzzy search and a
+        # near-miss would put the wrong human on a real task.
+        responses.add(
+            responses.POST,
+            f"{API}/v1/team/userProfile/findByMailOrName",
+            json={**PERSON, "mail": rpc_user.email},
+        )
 
         self.installation.sync_assignee_outbound(self.external_issue, rpc_user, assign=True)
 
         assert self._calls("/v1/team/userProfile/findByMailOrName") == [
-            {"searchText": next(iter(rpc_user.emails))}
-        ], "the Sentry user's own address is the key the two systems are matched on"
+            {"searchText": rpc_user.email}
+        ], "the Sentry user's own primary address is the key the two systems are matched on"
         assert self._calls(f"/v1/task/{TASK_ID}") == [
             {
                 "fieldId": ASSIGNEE_FIELD_ID,
@@ -370,10 +384,14 @@ class JagaSyncTest(APITestCase):
         )
 
     @responses.activate
-    def test_assigning_a_sentry_issue_to_a_team_clears_the_jaga_assignee(self) -> None:
-        """Sentry can assign an issue to a TEAM, and passes `user=None` when it does. A Jaga task
-        is assigned to people — so rather than guessing which member of the team to name, the
-        field is cleared."""
+    def test_no_user_means_unassign_which_is_what_sentry_means_by_it(self) -> None:
+        """`user=None` is Sentry's way of saying "nobody", in as many words: its own task resolves
+        the user with `user_service.get_user(user_id) if user_id else None`, under the comment
+        "Assume unassign if None" (`integrations/tasks/sync_assignee_outbound.py`).
+
+        (An issue assigned to a *team* never reaches here at all — `models/groupassignee.py` only
+        queues the outbound sync when `assignee_type == "user"`.)
+        """
         self._mock_jaga()
 
         self.installation.sync_assignee_outbound(self.external_issue, None, assign=True)
@@ -381,36 +399,75 @@ class JagaSyncTest(APITestCase):
         assert self._calls(f"/v1/task/{TASK_ID}")[0]["value"] == []
 
     @responses.activate
-    def test_a_sentry_user_who_does_not_exist_in_jaga_leaves_the_task_alone(self) -> None:
-        """Jaga answers an unknown email with 400 (`NotFoundException`). Someone who works in
-        Sentry but not in Jaga is the normal case — and clearing the assignee would be worse than
-        doing nothing: it would take a real person off a real task."""
+    def test_a_user_with_no_verified_email_must_not_wipe_the_assignee(self) -> None:
+        """THE destructive one. `RpcUser.emails` holds only the user's VERIFIED addresses, and
+        `UserEmail.is_verified` defaults to False — so on a self-hosted Sentry with no working
+        SMTP that set is empty for everybody.
+
+        Reading "no addresses" as "unassign" would mean that switching this sync on turns every
+        assignment in Sentry into the REMOVAL of the executor from the linked Jaga task. It has to
+        be a lookup miss instead: the task is left exactly as it was, and Sentry is told the target
+        could not be found.
+        """
         self._mock_jaga()
         responses.add(
             responses.POST,
             f"{API}/v1/team/userProfile/findByMailOrName",
-            json={"error": "User with email x does not exists"},
+            json={"error": "NotFoundException: User does not exists"},
+            status=400,
+        )
+        with assume_test_silo_mode(SiloMode.CONTROL):
+            UserEmail.objects.filter(user_id=self.user.id).update(is_verified=False)
+        rpc_user = user_service.get_user(user_id=self.user.id)
+        assert rpc_user is not None
+        assert rpc_user.emails == frozenset(), "the premise of this test"
+
+        with pytest.raises(IntegrationSyncTargetNotFound):
+            self.installation.sync_assignee_outbound(self.external_issue, rpc_user, assign=True)
+
+        assert self._calls(f"/v1/task/{TASK_ID}") == [], "the task must be left exactly as it was"
+
+    @responses.activate
+    def test_a_sentry_user_with_no_jaga_account_is_reported_not_written(self) -> None:
+        """`IntegrationSyncTargetNotFound` is what Sentry's task catches and records as a halt (it
+        does not retry it). Silently returning would record the assignment as a success that never
+        happened."""
+        self._mock_jaga()
+        responses.add(
+            responses.POST,
+            f"{API}/v1/team/userProfile/findByMailOrName",
+            json={"error": "NotFoundException: User does not exists"},
             status=400,
         )
 
-        self.installation.sync_assignee_outbound(
-            self.external_issue, user_service.get_user(user_id=self.user.id), assign=True
-        )
+        with pytest.raises(IntegrationSyncTargetNotFound):
+            self.installation.sync_assignee_outbound(
+                self.external_issue, user_service.get_user(user_id=self.user.id), assign=True
+            )
 
         assert self._calls(f"/v1/task/{TASK_ID}") == [], "the task keeps whoever it had"
 
     @responses.activate
-    def test_jaga_being_down_does_not_stop_someone_being_assigned_in_sentry(self) -> None:
-        """As with the status sync: the Jaga half is a courtesy, and it must not take the Sentry
-        half down with it."""
+    @responses.activate
+    def test_jaga_being_down_raises_so_that_sentry_retries_the_assignment(self) -> None:
+        """Unlike the status sync, this one does NOT swallow. Sentry's task retries five times, and
+        swallowing would throw that retry away AND record the assignment as a success that never
+        happened (`ProjectManagementEvent(OUTBOUND_ASSIGNMENT_SYNC).capture()` wraps the call).
+
+        The old version of this test had no assertions at all: it would have passed against a
+        `sync_assignee_outbound` that did nothing whatsoever.
+        """
         responses.add(responses.POST, f"{API}/v1/auth/login", json=AUTH_OK, status=200)
         responses.add(
             responses.GET, f"{API}/v1/task/findExtendedWithFlexField/code/PLT-500", status=500
         )
 
-        self.installation.sync_assignee_outbound(
-            self.external_issue, user_service.get_user(user_id=self.user.id), assign=True
-        )
+        with pytest.raises(IntegrationError):
+            self.installation.sync_assignee_outbound(
+                self.external_issue, user_service.get_user(user_id=self.user.id), assign=True
+            )
+
+        assert self._calls(f"/v1/task/{TASK_ID}") == [], "nothing may be written when Jaga is down"
 
     @responses.activate
     def test_create_comment_posts_the_note_attributed_to_its_author(self) -> None:
